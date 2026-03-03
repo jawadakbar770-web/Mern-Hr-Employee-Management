@@ -59,7 +59,7 @@ export default function AdminDashboard() {
               {sidebarOpen ? <X size={24} /> : <Menu size={24} />}
             </button>
             <h1 className="text-2xl font-bold text-gray-800">Dashboard</h1>
-            <div className="w-10 h-10 bg-blue-500 rounded-full"></div>
+            
           </div>
         </header>
 

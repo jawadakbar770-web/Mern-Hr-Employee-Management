@@ -59,7 +59,7 @@ export default function AdminSidebar({ isOpen, isMobile, onClose }) {
           <h1 className={`font-bold text-blue-400 transition-all ${
             isOpen ? 'text-2xl' : 'text-center text-xl'
           }`}>
-            {isOpen ? 'HR Portal' : 'HR'}
+            {isOpen ? 'NOORI HR Prtal' : 'HR'}
           </h1>
         </div>
 
