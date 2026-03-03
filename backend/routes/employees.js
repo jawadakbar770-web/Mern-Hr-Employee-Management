@@ -3,7 +3,7 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import Employee from '../models/Employee.js';
-import { adminAuth } from '../middleware/auth.js';
+import { adminAuth, auth } from '../middleware/auth.js';   // ← added `auth`
 import { parseDDMMYYYY } from '../utils/dateUtils.js';
 
 const router = express.Router();
@@ -27,25 +27,11 @@ const publicEmployee = (emp) => {
   return obj;
 };
 
-/**
- * Returns a Mongoose filter scoped to what the requesting role may see.
- *
- *   superadmin → sees everyone            (no filter)
- *   admin      → sees role:'employee' only
- *
- * REQUIRES adminAuth to attach req.role.
- * If req.role is missing/unknown we default to employees-only (safe fallback).
- */
 const roleVisibilityFilter = (requestingRole) => {
   if (requestingRole === 'superadmin') return {};
-  return { role: 'employee' };           // admin + unknown → employees only
+  return { role: 'employee' };
 };
 
-/**
- * Resolve which role the new account gets.
- *   superadmin creator → honours requested role (employee | admin | superadmin)
- *   admin creator      → always 'employee', ignores what was sent
- */
 const resolveNewRole = (creatorRole, requestedRole) => {
   if (creatorRole === 'superadmin') {
     return ['employee', 'admin', 'superadmin'].includes(requestedRole)
@@ -54,6 +40,27 @@ const resolveNewRole = (creatorRole, requestedRole) => {
   }
   return 'employee';
 };
+
+// ─── GET /api/employees/me ────────────────────────────────────────────────────
+// Any authenticated user (employee, admin, superadmin) can fetch their own
+// full profile — no adminAuth required.
+// IMPORTANT: must be registered BEFORE /:id so Express doesn't treat "me" as an id.
+
+router.get('/me', auth, async (req, res) => {
+  try {
+    const employee = await Employee.findOne({
+      _id:       req.userId,
+      isDeleted: false
+    }).select('-password -tempPassword -inviteToken -inviteTokenExpires');
+
+    if (!employee) {
+      return res.status(404).json({ success: false, message: 'Profile not found' });
+    }
+    return res.json({ success: true, employee });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // ─── GET /api/employees ───────────────────────────────────────────────────────
 
@@ -65,7 +72,7 @@ router.get('/', adminAuth, async (req, res) => {
       search,
       includeArchived = 'false',
       page  = 1,
-      limit = 200       // high default so frontend gets the full list in one call
+      limit = 200
     } = req.query;
 
     const query = {
@@ -135,7 +142,7 @@ router.post('/', adminAuth, async (req, res) => {
       department, joiningDate, shift,
       salaryType, hourlyRate, monthlySalary,
       bank,
-      role: requestedRole    // ← read role from payload
+      role: requestedRole
     } = req.body;
 
     if (!email || !employeeNumber || !firstName || !lastName || !department || !joiningDate) {
@@ -145,10 +152,8 @@ router.post('/', adminAuth, async (req, res) => {
       });
     }
 
-    // Determine actual role for new account
     const resolvedRole = resolveNewRole(req.role, requestedRole);
 
-    // Duplicate check
     const existing = await Employee.findOne({
       $or: [
         { email: email.toLowerCase().trim() },
@@ -161,7 +166,6 @@ router.post('/', adminAuth, async (req, res) => {
       return res.status(409).json({ success: false, message: `${field} already exists` });
     }
 
-    // Date parsing
     let parsedJoiningDate = parseDDMMYYYY(joiningDate) || new Date(joiningDate);
     if (!parsedJoiningDate || isNaN(parsedJoiningDate)) {
       return res.status(400).json({ success: false, message: 'Invalid joiningDate. Use dd/mm/yyyy or YYYY-MM-DD' });
@@ -183,7 +187,7 @@ router.post('/', adminAuth, async (req, res) => {
       firstName:          firstName.trim(),
       lastName:           lastName.trim(),
       department,
-      role:               resolvedRole,           // ← NOT hardcoded 'employee' anymore
+      role:               resolvedRole,
       joiningDate:        parsedJoiningDate,
       shift:              shift || { start: '09:00', end: '18:00' },
       salaryType:         resolvedSalaryType,
@@ -226,12 +230,52 @@ router.put('/:id', adminAuth, async (req, res) => {
     });
     if (!employee) return res.status(404).json({ success: false, message: 'Employee not found' });
 
-    // Scalar fields
+    // ── employeeNumber — check uniqueness before applying ─────────────────────
+    if (req.body.employeeNumber !== undefined) {
+      const trimmed = req.body.employeeNumber.trim();
+      if (!trimmed) {
+        return res.status(400).json({ success: false, message: 'Employee number cannot be empty', field: 'employeeNumber' });
+      }
+      const conflict = await Employee.findOne({
+        employeeNumber: trimmed,
+        isDeleted:      false,
+        _id:            { $ne: req.params.id }   // exclude the employee being edited
+      });
+      if (conflict) {
+        return res.status(409).json({
+          success: false,
+          message: 'Employee number already exists',
+          field:   'employeeNumber'          // ← frontend uses this to target the field
+        });
+      }
+      employee.employeeNumber = trimmed;
+    }
+
+    // ── email — check uniqueness before applying ──────────────────────────────
+    if (req.body.email !== undefined) {
+      const trimmed = req.body.email.toLowerCase().trim();
+      if (!trimmed) {
+        return res.status(400).json({ success: false, message: 'Email cannot be empty', field: 'email' });
+      }
+      const conflict = await Employee.findOne({
+        email:     trimmed,
+        isDeleted: false,
+        _id:       { $ne: req.params.id }
+      });
+      if (conflict) {
+        return res.status(409).json({
+          success: false,
+          message: 'Email already exists',
+          field:   'email'
+        });
+      }
+      employee.email = trimmed;
+    }
+
     ['firstName', 'lastName', 'department', 'shift', 'bank'].forEach(f => {
       if (req.body[f] !== undefined) employee[f] = req.body[f];
     });
 
-    // Only superadmin can change role
     if (req.body.role !== undefined) {
       if (req.role === 'superadmin') {
         if (!['employee', 'admin', 'superadmin'].includes(req.body.role)) {
@@ -239,7 +283,6 @@ router.put('/:id', adminAuth, async (req, res) => {
         }
         employee.role = req.body.role;
       }
-      // admin sending role → silently ignored (can't escalate)
     }
 
     if (req.body.salaryType !== undefined) {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { Plus, MoreVertical, AlertCircle, Shield } from 'lucide-react';
 import AddEmployeeModal  from './AddEmployeeModal';
@@ -9,13 +9,23 @@ import toast from 'react-hot-toast';
 // ─── Role helpers ─────────────────────────────────────────────────────────────
 const PRIVILEGED_ROLES = ['admin', 'superadmin'];
 
-// Can the actor perform privileged actions on the target?
-// superadmin → can manage anyone
-// admin      → can only manage regular employees (role = 'employee' or no role)
 function canManage(actorRole, targetRole) {
   if (actorRole === 'superadmin') return true;
   if (actorRole === 'admin') return !PRIVILEGED_ROLES.includes(targetRole);
   return false;
+}
+
+// Read role synchronously from localStorage so it's available on first render
+function readCurrentUser() {
+  try {
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    return {
+      id:   user._id || user.id || null,
+      role: user.role || localStorage.getItem('role') || ''
+    };
+  } catch {
+    return { id: null, role: localStorage.getItem('role') || '' };
+  }
 }
 
 function getRoleBadge(role) {
@@ -30,6 +40,9 @@ function getRoleBadge(role) {
 }
 
 export default function ManageEmployees() {
+  // Initialise synchronously so filterEmployees never runs with empty role
+  const { id: initId, role: initRole } = readCurrentUser();
+
   const [employees,         setEmployees]         = useState([]);
   const [filteredEmployees, setFilteredEmployees] = useState([]);
   const [loading,           setLoading]           = useState(true);
@@ -42,8 +55,8 @@ export default function ManageEmployees() {
   const [departmentFilter,  setDepartmentFilter]  = useState('All');
   const [roleFilter,        setRoleFilter]        = useState('All');
   const [openMenuId,        setOpenMenuId]        = useState(null);
-  const [currentUserId,     setCurrentUserId]     = useState(null);
-  const [currentUserRole,   setCurrentUserRole]   = useState('');
+  const [currentUserId,     setCurrentUserId]     = useState(initId);
+  const [currentUserRole,   setCurrentUserRole]   = useState(initRole);
 
   const isSuperAdmin = currentUserRole === 'superadmin';
   const isAdmin      = currentUserRole === 'admin' || isSuperAdmin;
@@ -51,7 +64,6 @@ export default function ManageEmployees() {
   const filterEmployees = useCallback((data) => {
     let filtered = data;
 
-    // Admins cannot see other admins/superadmins at all
     if (currentUserRole === 'admin') {
       filtered = filtered.filter(emp => !PRIVILEGED_ROLES.includes(emp.role));
     }
@@ -59,9 +71,9 @@ export default function ManageEmployees() {
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
       filtered = filtered.filter(emp =>
-        emp.firstName.toLowerCase().includes(term)     ||
-        emp.lastName.toLowerCase().includes(term)      ||
-        emp.email.toLowerCase().includes(term)         ||
+        emp.firstName.toLowerCase().includes(term)      ||
+        emp.lastName.toLowerCase().includes(term)       ||
+        emp.email.toLowerCase().includes(term)          ||
         emp.employeeNumber.toLowerCase().includes(term)
       );
     }
@@ -90,9 +102,9 @@ export default function ManageEmployees() {
   }, [filterEmployees]);
 
   useEffect(() => {
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
-    setCurrentUserId(user._id || user.id);
-    const role = localStorage.getItem('role') || user.role || '';
+    // Re-read from storage in case it was updated after initial render
+    const { id, role } = readCurrentUser();
+    setCurrentUserId(id);
     setCurrentUserRole(role);
     fetchEmployees();
   }, [fetchEmployees]);
@@ -101,10 +113,16 @@ export default function ManageEmployees() {
     filterEmployees(employees);
   }, [searchTerm, statusFilter, departmentFilter, roleFilter, employees, filterEmployees]);
 
+  // Close kebab menu on outside click or scroll
+  const menuRef = useRef(null);
   useEffect(() => {
-    const handleClickOutside = () => setOpenMenuId(null);
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
+    const close = () => setOpenMenuId(null);
+    document.addEventListener('click',  close);
+    document.addEventListener('scroll', close, true);
+    return () => {
+      document.removeEventListener('click',  close);
+      document.removeEventListener('scroll', close, true);
+    };
   }, []);
 
   // ─── Action guards ──────────────────────────────────────────────────────────
@@ -130,7 +148,6 @@ export default function ManageEmployees() {
   };
 
   const handleGhostMode = (employee) => {
-    // Ghost mode: admins can ghost employees only, superadmin can ghost anyone except themselves
     if (employee._id === currentUserId) {
       toast.error('You cannot ghost your own account');
       setOpenMenuId(null);
@@ -164,16 +181,17 @@ export default function ManageEmployees() {
 
   const handleArchive = async (employee) => {
     if (!guardAction(employee, 'archive')) return;
-    if (!window.confirm(`Archive ${employee.firstName} ${employee.lastName}? This will mark them Inactive.`)) {
+    if (!window.confirm(`Archive ${employee.firstName} ${employee.lastName}? They will be marked as archived.`)) {
       setOpenMenuId(null);
       return;
     }
     try {
       const token = localStorage.getItem('token');
-      await axios.put(`/api/employees/${employee._id}`, { status: 'Inactive' }, {
+      // ← fixed: was axios.put with { status: 'Inactive' } which hits the wrong endpoint
+      await axios.patch(`/api/employees/${employee._id}/archive`, {}, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      toast.success('Employee archived (set to Inactive)');
+      toast.success(`Employee ${employee.isArchived ? 'unarchived' : 'archived'}`);
       fetchEmployees();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to archive employee');
@@ -190,7 +208,7 @@ export default function ManageEmployees() {
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (response.data.inviteLink) {
-        await navigator.clipboard.writeText(response.data.inviteLink);
+        await navigator.clipboard.writeText(response.data.inviteLink).catch(() => {});
         toast.success('Invite link copied to clipboard');
       } else {
         toast.success('Invite resent successfully');
@@ -211,9 +229,55 @@ export default function ManageEmployees() {
     }
   };
 
-  // Whether the kebab actions should be enabled for a given employee row
   const rowIsManageable = (employee) =>
     employee._id !== currentUserId && canManage(currentUserRole, employee.role);
+
+  const KebabMenu = ({ employee }) => {
+    const manageable = rowIsManageable(employee);
+    const isSelf     = employee._id === currentUserId;
+
+    return (
+      <div
+        className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-lg z-40 border border-gray-200"
+        onClick={e => e.stopPropagation()}
+      >
+        <button onClick={() => handleEdit(employee)} disabled={!manageable}
+          className={`w-full flex items-center gap-2 px-4 py-3 text-left text-sm border-b transition ${
+            !manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'text-gray-700 hover:bg-gray-50'
+          }`}>
+          ✏️ Edit Information
+        </button>
+
+        <button onClick={() => handleGhostMode(employee)} disabled={!manageable}
+          className={`w-full flex items-center gap-2 px-4 py-3 text-left text-sm border-b transition ${
+            !manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'text-gray-700 hover:bg-gray-50'
+          }`}>
+          👁️ Ghost Mode
+        </button>
+
+        <button onClick={() => handleFreeze(employee)} disabled={!manageable}
+          className={`w-full flex items-center gap-2 px-4 py-3 text-left text-sm border-b transition ${
+            !manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'text-gray-700 hover:bg-gray-50'
+          }`}>
+          🔒 {employee.status === 'Frozen' ? 'Unfreeze' : 'Freeze'} Account
+        </button>
+
+        <button onClick={() => handleArchive(employee)} disabled={!manageable}
+          className={`w-full flex items-center gap-2 px-4 py-3 text-left text-sm transition ${
+            !manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'text-red-700 hover:bg-red-50'
+          }`}>
+          🗑️ {employee.isArchived ? 'Unarchive' : 'Archive'}
+        </button>
+
+        {employee.status === 'Inactive' && manageable && (
+          <button onClick={() => handleResendInvite(employee)}
+            className="w-full flex items-center gap-2 px-4 py-3 text-left text-gray-700 hover:bg-gray-50 text-sm transition border-t">
+            📧 Resend Invite
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="p-4 md:p-6">
@@ -259,7 +323,6 @@ export default function ManageEmployees() {
             <option value="HR">HR</option>
             <option value="Finance">Finance</option>
           </select>
-          {/* Superadmin can filter by role; admin only sees employees so filter is hidden */}
           {isSuperAdmin && (
             <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)}
               className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
@@ -304,7 +367,7 @@ export default function ManageEmployees() {
                 <tbody className="divide-y">
                   {filteredEmployees.map(employee => {
                     const manageable = rowIsManageable(employee);
-                    const isSelf = employee._id === currentUserId;
+                    const isSelf     = employee._id === currentUserId;
                     return (
                       <tr key={employee._id}
                         className={`hover:bg-gray-50 ${PRIVILEGED_ROLES.includes(employee.role) ? 'bg-purple-50/30' : ''}`}>
@@ -332,57 +395,7 @@ export default function ManageEmployees() {
                             className="text-gray-400 hover:text-gray-600 inline-block p-1">
                             <MoreVertical size={18} />
                           </button>
-
-                          {openMenuId === employee._id && (
-                            <div className="absolute right-0 mt-2 w-56 bg-white rounded-lg shadow-lg z-40 border border-gray-200"
-                              onClick={e => e.stopPropagation()}>
-
-                              {/* Edit */}
-                              <button onClick={() => handleEdit(employee)}
-                                disabled={!manageable}
-                                title={!manageable && !isSelf ? 'Insufficient permissions' : undefined}
-                                className={`w-full flex items-center gap-2 px-4 py-3 text-left text-sm border-b transition ${
-                                  !manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'text-gray-700 hover:bg-gray-50'
-                                }`}>
-                                ✏️ Edit Information
-                              </button>
-
-                              {/* Ghost Mode */}
-                              <button onClick={() => handleGhostMode(employee)}
-                                disabled={!manageable}
-                                className={`w-full flex items-center gap-2 px-4 py-3 text-left text-sm border-b transition ${
-                                  !manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'text-gray-700 hover:bg-gray-50'
-                                }`}>
-                                👁️ Ghost Mode
-                              </button>
-
-                              {/* Freeze */}
-                              <button onClick={() => handleFreeze(employee)}
-                                disabled={!manageable}
-                                className={`w-full flex items-center gap-2 px-4 py-3 text-left text-sm border-b transition ${
-                                  !manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'text-gray-700 hover:bg-gray-50'
-                                }`}>
-                                🔒 {employee.status === 'Frozen' ? 'Unfreeze' : 'Freeze'} Account
-                              </button>
-
-                              {/* Archive */}
-                              <button onClick={() => handleArchive(employee)}
-                                disabled={!manageable}
-                                className={`w-full flex items-center gap-2 px-4 py-3 text-left text-sm transition ${
-                                  !manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'text-red-700 hover:bg-red-50'
-                                }`}>
-                                🗑️ Archive
-                              </button>
-
-                              {/* Resend Invite */}
-                              {employee.status === 'Inactive' && manageable && (
-                                <button onClick={() => handleResendInvite(employee)}
-                                  className="w-full flex items-center gap-2 px-4 py-3 text-left text-gray-700 hover:bg-gray-50 text-sm transition border-t">
-                                  📧 Resend Invite
-                                </button>
-                              )}
-                            </div>
-                          )}
+                          {openMenuId === employee._id && <KebabMenu employee={employee} />}
                         </td>
                       </tr>
                     );
@@ -395,7 +408,7 @@ export default function ManageEmployees() {
             <div className="md:hidden space-y-4 p-4">
               {filteredEmployees.map(employee => {
                 const manageable = rowIsManageable(employee);
-                const isSelf = employee._id === currentUserId;
+                const isSelf     = employee._id === currentUserId;
                 return (
                   <div key={employee._id}
                     className={`border rounded-lg p-4 ${PRIVILEGED_ROLES.includes(employee.role) ? 'border-purple-200 bg-purple-50/30' : ''}`}>
@@ -427,30 +440,8 @@ export default function ManageEmployees() {
                         ⋮ More
                       </button>
                       {openMenuId === employee._id && (
-                        <div className="absolute top-full mt-2 w-full bg-white rounded-lg shadow-lg z-40 border border-gray-200"
-                          onClick={e => e.stopPropagation()}>
-                          <button onClick={() => handleEdit(employee)} disabled={!manageable}
-                            className={`w-full px-4 py-3 text-left text-sm border-b ${!manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'hover:bg-gray-50'}`}>
-                            ✏️ Edit
-                          </button>
-                          <button onClick={() => handleGhostMode(employee)} disabled={!manageable}
-                            className={`w-full px-4 py-3 text-left text-sm border-b ${!manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'hover:bg-gray-50'}`}>
-                            👁️ Ghost Mode
-                          </button>
-                          <button onClick={() => handleFreeze(employee)} disabled={!manageable}
-                            className={`w-full px-4 py-3 text-left text-sm border-b ${!manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'hover:bg-gray-50'}`}>
-                            🔒 {employee.status === 'Frozen' ? 'Unfreeze' : 'Freeze'}
-                          </button>
-                          <button onClick={() => handleArchive(employee)} disabled={!manageable}
-                            className={`w-full px-4 py-3 text-left text-sm ${!manageable ? 'opacity-40 cursor-not-allowed text-gray-400' : 'hover:bg-red-50 text-red-700'}`}>
-                            🗑️ Archive
-                          </button>
-                          {employee.status === 'Inactive' && manageable && (
-                            <button onClick={() => handleResendInvite(employee)}
-                              className="w-full px-4 py-3 text-left text-sm border-t hover:bg-gray-50">
-                              📧 Resend Invite
-                            </button>
-                          )}
+                        <div className="absolute top-full mt-1 left-0 right-0 z-40">
+                          <KebabMenu employee={employee} />
                         </div>
                       )}
                     </div>

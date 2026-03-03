@@ -24,25 +24,22 @@ export default function Profile() {
   }, []);
 
   const formatDateToDisplay = (dateStr) => {
-    if (!dateStr) return '';
-    const date = new Date(dateStr);
+    if (!dateStr) return '—';
+    const date  = new Date(dateStr);
     const day   = String(date.getDate()).padStart(2, '0');
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const year  = date.getFullYear();
     return `${day}/${month}/${year}`;
   };
 
-  // ── FIX 1: Use /api/auth/validate-token instead of admin-only /api/employees/:id ──
   const fetchProfile = async () => {
     try {
       const token = localStorage.getItem('token');
-
-      const response = await axios.get('/api/auth/validate-token', {
+      const { data } = await axios.get('/api/employees/me', {
         headers: { Authorization: `Bearer ${token}` },
       });
-
-      if (response.data.success) {
-        setEmployee(response.data.user);
+      if (data.success) {
+        setEmployee(data.employee);
       } else {
         toast.error('Failed to load profile');
       }
@@ -53,7 +50,6 @@ export default function Profile() {
     }
   };
 
-  // ── FIX 2: Send currentPassword in request body + show field in UI ──
   const handleChangePassword = async (e) => {
     e.preventDefault();
 
@@ -61,17 +57,14 @@ export default function Profile() {
       toast.error('Please enter your current password');
       return;
     }
-
     if (formData.newPassword !== formData.confirmPassword) {
       toast.error('Passwords do not match');
       return;
     }
-
     if (formData.newPassword.length < 8) {
       toast.error('Password must be at least 8 characters');
       return;
     }
-
     if (formData.currentPassword === formData.newPassword) {
       toast.error('New password must be different from current password');
       return;
@@ -80,22 +73,16 @@ export default function Profile() {
     setSaving(true);
     try {
       const token = localStorage.getItem('token');
-
       await axios.post(
         '/api/auth/change-password',
-        {
-          currentPassword: formData.currentPassword, // ← was missing before
-          newPassword: formData.newPassword,
-        },
+        { currentPassword: formData.currentPassword, newPassword: formData.newPassword },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-
       toast.success('Password changed successfully');
       setFormData({ currentPassword: '', newPassword: '', confirmPassword: '' });
       setEditMode(false);
     } catch (error) {
-      const msg = error.response?.data?.message || 'Failed to change password';
-      toast.error(msg);
+      toast.error(error.response?.data?.message || 'Failed to change password');
     } finally {
       setSaving(false);
     }
@@ -117,45 +104,34 @@ export default function Profile() {
     );
   }
 
-  const InfoField = ({ label, value, type = 'text' }) => (
+  // ── Reusable read-only field ───────────────────────────────────────────────
+  const InfoField = ({ label, value }) => (
     <div>
       <label className="block text-sm font-medium text-gray-600 mb-1">{label}</label>
-      <input
-        type={type}
-        value={value || ''}
-        readOnly
-        className="w-full px-4 py-2 bg-gray-100 border border-gray-200 rounded-lg text-gray-700 cursor-not-allowed select-none"
-      />
-    </div>
-  );
-
-  const PasswordField = ({ label, field, placeholder }) => (
-    <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
-      <div className="relative">
-        <input
-          type={showPassword[field] ? 'text' : 'password'}
-          value={formData[`${field}Password`] ?? formData[field] ?? ''}
-          onChange={(e) =>
-            setFormData((prev) => ({
-              ...prev,
-              [`${field}Password`]: e.target.value,
-            }))
-          }
-          required
-          className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
-          placeholder={placeholder}
-        />
-        <button
-          type="button"
-          onClick={() => toggleShow(field)}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-        >
-          {showPassword[field] ? <EyeOff size={18} /> : <Eye size={18} />}
-        </button>
+      <div className="w-full px-4 py-2 bg-gray-100 border border-gray-200 rounded-lg text-gray-700 min-h-[40px]">
+        {value || <span className="text-gray-400">—</span>}
       </div>
     </div>
   );
+
+  // ── Salary display helper ──────────────────────────────────────────────────
+  const salaryDisplay = () => {
+    if (!employee?.salaryType) return null;
+    if (employee.salaryType === 'monthly') {
+      return (
+        <>
+          <InfoField label="Salary Type"      value="Monthly" />
+          <InfoField label="Monthly Salary (PKR)" value={employee.monthlySalary?.toLocaleString('en-PK')} />
+        </>
+      );
+    }
+    return (
+      <>
+        <InfoField label="Salary Type"      value="Hourly" />
+        <InfoField label="Hourly Rate (PKR)" value={employee.hourlyRate?.toLocaleString('en-PK')} />
+      </>
+    );
+  };
 
   return (
     <div className="p-4 md:p-6 bg-gray-50 min-h-screen">
@@ -176,7 +152,7 @@ export default function Profile() {
               <InfoField label="Last Name"  value={employee?.lastName} />
             </div>
 
-            <InfoField label="Email" value={employee?.email} type="email" />
+            <InfoField label="Email" value={employee?.email} />
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <InfoField label="Employee ID" value={employee?.employeeNumber} />
@@ -184,20 +160,28 @@ export default function Profile() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Joining Date — needs special formatting */}
               <div>
                 <label className="block text-sm font-medium text-gray-600 mb-1">Joining Date</label>
-                <div className="flex items-center gap-2 px-4 py-2 bg-gray-100 border border-gray-200 rounded-lg text-gray-700">
+                <div className="flex items-center gap-2 px-4 py-2 bg-gray-100 border border-gray-200 rounded-lg text-gray-700 min-h-[40px]">
                   <Calendar size={16} className="text-gray-400 shrink-0" />
-                  <span>{employee?.joiningDate ? formatDateToDisplay(employee.joiningDate) : '—'}</span>
+                  <span>{employee?.joiningDate ? formatDateToDisplay(employee.joiningDate) : <span className="text-gray-400">—</span>}</span>
                 </div>
               </div>
-              <InfoField label="Hourly Rate (PKR)" value={employee?.hourlyRate} type="number" />
+              <InfoField label="Status" value={employee?.status} />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <InfoField label="Shift Start" value={employee?.shift?.start} type="time" />
-              <InfoField label="Shift End"   value={employee?.shift?.end}   type="time" />
+              <InfoField label="Shift Start" value={employee?.shift?.start} />
+              <InfoField label="Shift End"   value={employee?.shift?.end} />
             </div>
+
+            {/* Salary info */}
+            {employee?.salaryType && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {salaryDisplay()}
+              </div>
+            )}
           </div>
         </div>
 
@@ -208,11 +192,15 @@ export default function Profile() {
             <h2 className="text-lg font-semibold text-gray-800">Bank Details</h2>
           </div>
 
-          <div className="space-y-4">
-            <InfoField label="Bank Name"      value={employee?.bank?.bankName} />
-            <InfoField label="Account Name"   value={employee?.bank?.accountName} />
-            <InfoField label="Account Number" value={employee?.bank?.accountNumber} />
-          </div>
+          {employee?.bank?.bankName || employee?.bank?.accountName || employee?.bank?.accountNumber ? (
+            <div className="space-y-4">
+              <InfoField label="Bank Name"      value={employee?.bank?.bankName} />
+              <InfoField label="Account Name"   value={employee?.bank?.accountName} />
+              <InfoField label="Account Number" value={employee?.bank?.accountNumber} />
+            </div>
+          ) : (
+            <p className="text-sm text-gray-400 italic">No bank details on file.</p>
+          )}
         </div>
 
         {/* ── Change Password ── */}
@@ -241,82 +229,37 @@ export default function Profile() {
 
           {editMode && (
             <form onSubmit={handleChangePassword} className="space-y-4">
-              {/* ── FIX 3: currentPassword field was missing from the UI ── */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Current Password <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword.current ? 'text' : 'password'}
-                    value={formData.currentPassword}
-                    onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, currentPassword: e.target.value }))
-                    }
-                    required
-                    className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                    placeholder="Enter current password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggleShow('current')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  >
-                    {showPassword.current ? <EyeOff size={18} /> : <Eye size={18} />}
-                  </button>
+              {[
+                { label: 'Current Password', field: 'current', key: 'currentPassword', placeholder: 'Enter current password' },
+                { label: 'New Password',     field: 'new',     key: 'newPassword',     placeholder: 'At least 8 characters' },
+                { label: 'Confirm New Password', field: 'confirm', key: 'confirmPassword', placeholder: 'Repeat new password' },
+              ].map(({ label, field, key, placeholder }) => (
+                <div key={field}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {label} <span className="text-red-500">*</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword[field] ? 'text' : 'password'}
+                      value={formData[key]}
+                      onChange={(e) => setFormData((prev) => ({ ...prev, [key]: e.target.value }))}
+                      required
+                      className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                      placeholder={placeholder}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => toggleShow(field)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      {showPassword[field] ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
+                  {key === 'newPassword' && (
+                    <p className="text-xs text-gray-500 mt-1">Must be at least 8 characters</p>
+                  )}
                 </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  New Password <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword.new ? 'text' : 'password'}
-                    value={formData.newPassword}
-                    onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, newPassword: e.target.value }))
-                    }
-                    required
-                    className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                    placeholder="At least 8 characters"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggleShow('new')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  >
-                    {showPassword.new ? <EyeOff size={18} /> : <Eye size={18} />}
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Must be at least 8 characters</p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Confirm New Password <span className="text-red-500">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword.confirm ? 'text' : 'password'}
-                    value={formData.confirmPassword}
-                    onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, confirmPassword: e.target.value }))
-                    }
-                    required
-                    className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                    placeholder="Repeat new password"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => toggleShow('confirm')}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  >
-                    {showPassword.confirm ? <EyeOff size={18} /> : <Eye size={18} />}
-                  </button>
-                </div>
-              </div>
+              ))}
 
               <button
                 type="submit"

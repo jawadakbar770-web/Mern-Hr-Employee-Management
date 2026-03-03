@@ -85,6 +85,11 @@ router.post('/login', async (req, res) => {
   }
 });
 
+
+// logout
+// Since we're using JWTs, logout is handled client-side by simply deleting the token.
+
+
 // ─── POST /api/auth/employee-onboard ─────────────────────────────────────────
 // Called when a new employee clicks the invite link and sets up their account.
 

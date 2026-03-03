@@ -100,6 +100,9 @@ export default function EditEmployeeModal({ employee, onClose, onSave, currentUs
 
     if (!formData.firstName.trim()) newErrors.firstName = 'First name is required';
     if (!formData.lastName.trim())  newErrors.lastName  = 'Last name is required';
+    if (!formData.employeeNumber.trim()) newErrors.employeeNumber = 'Employee number is required';
+    if (!formData.email.trim())     newErrors.email     = 'Email is required';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) newErrors.email = 'Enter a valid email address';
     if (!isValidTime(formData.shift.start)) newErrors.shiftStart = 'Invalid shift start (HH:mm)';
     if (!isValidTime(formData.shift.end))   newErrors.shiftEnd   = 'Invalid shift end (HH:mm)';
 
@@ -113,7 +116,7 @@ export default function EditEmployeeModal({ employee, onClose, onSave, currentUs
     }
 
     if (Object.keys(newErrors).length > 0) {
-      if (newErrors.firstName || newErrors.lastName) {
+      if (newErrors.firstName || newErrors.lastName || newErrors.email || newErrors.employeeNumber) {
         setActiveTab('basic');
       } else if (newErrors.shiftStart || newErrors.shiftEnd ||
                  newErrors.hourlyRate || newErrors.monthlySalary) {
@@ -137,15 +140,17 @@ export default function EditEmployeeModal({ employee, onClose, onSave, currentUs
       const token = localStorage.getItem('token');
 
       const payload = {
-        firstName:     formData.firstName,
-        lastName:      formData.lastName,
-        department:    formData.department,
+        firstName:      formData.firstName,
+        lastName:       formData.lastName,
+        email:          formData.email,
+        employeeNumber: formData.employeeNumber,
+        department:     formData.department,
+        joiningDate:   formData.joiningDate ? formatToDDMMYYYY(formData.joiningDate) : null,
         shift:         formData.shift,
         salaryType:    formData.salaryType,
         hourlyRate:    parseFloat(formData.hourlyRate) || 0,
         monthlySalary: formData.salaryType === 'monthly' ? parseFloat(formData.monthlySalary) : null,
         bank:          formData.bank,
-        joiningDate:   formatToDDMMYYYY(formData.joiningDate),
         // Only superadmin can change the role field
         ...(isSuperAdmin && { role: formData.role })
       };
@@ -158,7 +163,16 @@ export default function EditEmployeeModal({ employee, onClose, onSave, currentUs
       if (onSave) onSave();
       onClose();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to update employee');
+      const data = err.response?.data;
+      // Backend returns { field: 'employeeNumber' | 'email', message: '...' } on 409 conflicts
+      // — show the error inline on the field instead of just a toast, and stay on the modal
+      if (data?.field) {
+        setErrors(prev => ({ ...prev, [data.field]: data.message }));
+        setActiveTab('basic');   // both conflicting fields live on the Basic tab
+        toast.error(data.message);
+      } else {
+        toast.error(data?.message || 'Failed to update employee');
+      }
     } finally {
       setLoading(false);
     }
@@ -271,16 +285,21 @@ export default function EditEmployeeModal({ employee, onClose, onSave, currentUs
                 </div>
               </div>
 
+              {/* ── Email — editable ──────────────────────────────────────── */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Email (Read-only)</label>
-                <input type="email" value={formData.email} readOnly
-                  className="w-full px-4 py-2 bg-gray-100 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed" />
+                <label className="block text-sm font-medium text-gray-700 mb-2">Email *</label>
+                <input type="email" name="email" value={formData.email}
+                  onChange={handleInputChange} disabled={loading}
+                  className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 ${errors.email ? 'border-red-500' : 'border-gray-300'}`} />
+                {errors.email && <p className="text-xs text-red-600 mt-1">{errors.email}</p>}
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Employee Number (Read-only)</label>
-                <input type="text" value={formData.employeeNumber} readOnly
-                  className="w-full px-4 py-2 bg-gray-100 border border-gray-300 rounded-lg text-gray-600 cursor-not-allowed" />
+                <label className="block text-sm font-medium text-gray-700 mb-2">Employee Number *</label>
+                <input type="text" name="employeeNumber" value={formData.employeeNumber}
+                  onChange={handleInputChange} disabled={loading}
+                  className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 ${errors.employeeNumber ? 'border-red-500' : 'border-gray-300'}`} />
+                {errors.employeeNumber && <p className="text-xs text-red-600 mt-1">{errors.employeeNumber}</p>}
               </div>
 
               <div>
@@ -322,7 +341,7 @@ export default function EditEmployeeModal({ employee, onClose, onSave, currentUs
                   )}
                 </div>
               ) : (
-                /* Admin sees role as read-only */
+                /* Admin / non-superadmin sees role as read-only */
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Role (Read-only)</label>
                   <input type="text" value={formData.role || 'employee'} readOnly
@@ -330,12 +349,28 @@ export default function EditEmployeeModal({ employee, onClose, onSave, currentUs
                 </div>
               )}
 
+              {/* ── Joining Date — editable ───────────────────────────────── */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Joining Date (Read-only)</label>
-                <div className="w-full px-4 py-2 bg-gray-100 border border-gray-300 rounded-lg text-gray-600 flex items-center justify-between cursor-not-allowed">
-                  <span>{formData.joiningDate ? formatToDDMMYYYY(formData.joiningDate) : '—'}</span>
-                  <Calendar size={18} className="text-gray-400" />
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Joining Date
+                </label>
+                <div className="relative">
+                  <input
+                    ref={dateInputRef}
+                    type="date"
+                    name="joiningDate"
+                    value={formData.joiningDate}
+                    onChange={handleInputChange}
+                    disabled={loading}
+                    className={`w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 ${errors.joiningDate ? 'border-red-500' : 'border-gray-300'}`}
+                  />
                 </div>
+                {errors.joiningDate && <p className="text-xs text-red-600 mt-1">{errors.joiningDate}</p>}
+                {formData.joiningDate && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Displays as: {formatToDDMMYYYY(formData.joiningDate)}
+                  </p>
+                )}
               </div>
             </div>
           )}

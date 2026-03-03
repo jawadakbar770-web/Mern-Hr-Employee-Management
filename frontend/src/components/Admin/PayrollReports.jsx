@@ -21,7 +21,6 @@ const toBackendDate = (isoStr) => {
   return `${day}/${month}/${year}`;
 };
 
-// Always read role from the user object — stays in sync with what the server issued
 function getCurrentUserRole() {
   try {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -34,12 +33,12 @@ function getCurrentUserRole() {
 export default function PayrollReports() {
   const attFromRef = useRef(null);
   const attToRef   = useRef(null);
+  const indFromRef = useRef(null);
+  const indToRef   = useRef(null);
   const salFromRef = useRef(null);
   const salToRef   = useRef(null);
 
-  // ── Auth / role ────────────────────────────────────────────────────────────
   const userRole     = getCurrentUserRole();
-  const isSuperAdmin = userRole === 'superadmin';
   const getToken     = () => localStorage.getItem('token');
 
   // ── Live employee list ─────────────────────────────────────────────────────
@@ -51,14 +50,9 @@ export default function PayrollReports() {
         headers: { Authorization: `Bearer ${getToken()}` }
       });
       let list = res.data?.employees || [];
-
-      // admin sees only employees — not other admins / superadmins
-      // Note: the backend /api/employees already scopes by userRole after our auth.js fix,
-      // but we filter here too as a safety net in case the cached list is stale.
       if (userRole === 'admin') {
         list = list.filter(emp => !PRIVILEGED_ROLES.includes(emp.role));
       }
-
       setEmployees(list);
     } catch {
       // non-fatal
@@ -67,23 +61,150 @@ export default function PayrollReports() {
 
   useEffect(() => { fetchEmployees(); }, [fetchEmployees]);
 
-  // ── Shared dates ───────────────────────────────────────────────────────────
-  const [fromDate, setFromDate] = useState(new Date().toISOString().split('T')[0]);
-  const [toDate,   setToDate]   = useState(new Date().toISOString().split('T')[0]);
+  // ══════════════════════════════════════════════════════════════════════════
+  // SECTION 1 — All Employees state
+  // ══════════════════════════════════════════════════════════════════════════
+  const [s1FromDate,       setS1FromDate]       = useState(new Date().toISOString().split('T')[0]);
+  const [s1ToDate,         setS1ToDate]         = useState(new Date().toISOString().split('T')[0]);
+  const [s1Filter,         setS1Filter]         = useState('Attendance');
+  const [s1Loading,        setS1Loading]        = useState(false);
+  const [s1AttChart,       setS1AttChart]       = useState([]);
+  const [s1AttList,        setS1AttList]        = useState([]);
+  const [s1PerfData,       setS1PerfData]       = useState([]);
+  const [s1ClickedType,    setS1ClickedType]    = useState(null);
 
-  // ── Attendance & Performance ───────────────────────────────────────────────
-  const [attendanceChart,    setAttendanceChart]    = useState([]);
-  const [attendanceList,     setAttendanceList]     = useState([]);
-  const [attendanceLoading,  setAttendanceLoading]  = useState(false);
-  const [performanceData,    setPerformanceData]    = useState([]);
-  const [performanceLoading, setPerformanceLoading] = useState(false);
-  const [clickedChartType,   setClickedChartType]   = useState(null);
-  const [sectionFilter,      setSectionFilter]      = useState('Attendance');
-  const [expandedEmployees,  setExpandedEmployees]  = useState({});
+  const fetchS1Attendance = async () => {
+    setS1Loading(true);
+    try {
+      const res = await axios.post(
+        '/api/payroll/attendance-overview',
+        { fromDate: toBackendDate(s1FromDate), toDate: toBackendDate(s1ToDate) },
+        { headers: { Authorization: `Bearer ${getToken()}` } }
+      );
+      setS1AttChart(res.data.chartData   || []);
+      setS1AttList(res.data.detailedList || []);
+      setS1ClickedType(null);
+    } catch {
+      toast.error('Failed to load attendance data');
+    } finally {
+      setS1Loading(false);
+    }
+  };
 
-  // ── Section 2: employee search ─────────────────────────────────────────────
-  const [selectedEmployee,     setSelectedEmployee]     = useState('');
-  const [employeeDropdownOpen, setEmployeeDropdownOpen] = useState(false);
+  const fetchS1Performance = async () => {
+    setS1Loading(true);
+    try {
+      const res = await axios.post(
+        '/api/payroll/performance-overview',
+        { fromDate: toBackendDate(s1FromDate), toDate: toBackendDate(s1ToDate) },
+        { headers: { Authorization: `Bearer ${getToken()}` } }
+      );
+      setS1PerfData(res.data.performance || []);
+    } catch {
+      toast.error('Failed to load performance data');
+    } finally {
+      setS1Loading(false);
+    }
+  };
+
+  const loadS1Data = () => {
+    if (s1Filter === 'Attendance') fetchS1Attendance();
+    else fetchS1Performance();
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SECTION 2 — Individual Employee state
+  // ══════════════════════════════════════════════════════════════════════════
+  const [s2FromDate,          setS2FromDate]          = useState(new Date().toISOString().split('T')[0]);
+  const [s2ToDate,            setS2ToDate]            = useState(new Date().toISOString().split('T')[0]);
+  const [s2Filter,            setS2Filter]            = useState('Attendance');
+  const [s2Loading,           setS2Loading]           = useState(false);
+  const [s2AttChart,          setS2AttChart]          = useState([]);
+  const [s2AttList,           setS2AttList]           = useState([]);
+  const [s2PerfData,          setS2PerfData]          = useState([]);
+  const [s2ClickedType,       setS2ClickedType]       = useState(null);
+  const [selectedEmployee,    setSelectedEmployee]    = useState('');
+  const [selectedEmployeeId,  setSelectedEmployeeId]  = useState('');
+  const [employeeDropdownOpen,setEmployeeDropdownOpen]= useState(false);
+
+  const fetchS2Attendance = async () => {
+    setS2Loading(true);
+    try {
+      // Pass the selected employee name as a filter so backend returns only that employee's data
+      const body = {
+        fromDate: toBackendDate(s2FromDate),
+        toDate:   toBackendDate(s2ToDate),
+      };
+      // If a specific employee is selected, filter server-side via empId if available,
+      // otherwise we filter client-side below
+      const res = await axios.post(
+        '/api/payroll/attendance-overview',
+        body,
+        { headers: { Authorization: `Bearer ${getToken()}` } }
+      );
+
+      const rawChart = res.data.chartData   || [];
+      const rawList  = res.data.detailedList || [];
+
+      // If an employee is selected, filter the detailed list and recompute chart counts
+      if (selectedEmployee) {
+        const filtered = rawList.filter(item =>
+          item.name.toLowerCase().includes(selectedEmployee.toLowerCase())
+        );
+
+        // Recompute chart totals from filtered list
+        const statusCount = { 'On-time': 0, Late: 0, Leave: 0, Absent: 0 };
+        filtered.forEach(item => {
+          if (statusCount[item.type] !== undefined) statusCount[item.type]++;
+        });
+        const total = Object.values(statusCount).reduce((a, b) => a + b, 0);
+        const filteredChart = Object.entries(statusCount).map(([name, value]) => ({
+          name, value,
+          percentage: total > 0 ? ((value / total) * 100).toFixed(1) : '0.0'
+        }));
+
+        setS2AttChart(filteredChart);
+        setS2AttList(filtered);
+      } else {
+        setS2AttChart(rawChart);
+        setS2AttList(rawList);
+      }
+      setS2ClickedType(null);
+    } catch {
+      toast.error('Failed to load attendance data');
+    } finally {
+      setS2Loading(false);
+    }
+  };
+
+  const fetchS2Performance = async () => {
+    setS2Loading(true);
+    try {
+      const res = await axios.post(
+        '/api/payroll/performance-overview',
+        { fromDate: toBackendDate(s2FromDate), toDate: toBackendDate(s2ToDate) },
+        { headers: { Authorization: `Bearer ${getToken()}` } }
+      );
+
+      const rawPerf = res.data.performance || [];
+
+      // Filter to selected employee if one is chosen
+      const filtered = selectedEmployee
+        ? rawPerf.filter(emp => emp.name.toLowerCase().includes(selectedEmployee.toLowerCase()))
+        : rawPerf;
+
+      setS2PerfData(filtered);
+    } catch {
+      toast.error('Failed to load performance data');
+    } finally {
+      setS2Loading(false);
+    }
+  };
+
+  const loadS2Data = () => {
+    if (s2Filter === 'Attendance') fetchS2Attendance();
+    else fetchS2Performance();
+  };
 
   // ── Salary ─────────────────────────────────────────────────────────────────
   const [salaryFromDate, setSalaryFromDate] = useState(new Date().toISOString().split('T')[0]);
@@ -92,98 +213,109 @@ export default function PayrollReports() {
   const [salaryTotals,   setSalaryTotals]   = useState({
     totalBaseSalary: 0, totalOT: 0, totalDeductions: 0, totalNetPayable: 0
   });
-  const [salaryLoading, setSalaryLoading] = useState(false);
-  const [salarySearch,  setSalarySearch]  = useState('');
-
-  // ── Fetch helpers ──────────────────────────────────────────────────────────
-
-  const fetchAttendanceOverview = async () => {
-    setAttendanceLoading(true);
-    try {
-      const res = await axios.post(
-        '/api/payroll/attendance-overview',
-        { fromDate: toBackendDate(fromDate), toDate: toBackendDate(toDate) },
-        { headers: { Authorization: `Bearer ${getToken()}` } }
-      );
-      setAttendanceChart(res.data.chartData   || []);
-      setAttendanceList(res.data.detailedList || []);
-      setClickedChartType(null);
-    } catch {
-      toast.error('Failed to load attendance data');
-    } finally {
-      setAttendanceLoading(false);
-    }
-  };
-
-  const fetchPerformanceOverview = async () => {
-    setPerformanceLoading(true);
-    try {
-      const res = await axios.post(
-        '/api/payroll/performance-overview',
-        { fromDate: toBackendDate(fromDate), toDate: toBackendDate(toDate) },
-        { headers: { Authorization: `Bearer ${getToken()}` } }
-      );
-      setPerformanceData(res.data.performance || []);
-    } catch {
-      toast.error('Failed to load performance data');
-    } finally {
-      setPerformanceLoading(false);
-    }
-  };
-
-  const loadSectionData = () => {
-    if (sectionFilter === 'Attendance') fetchAttendanceOverview();
-    if (sectionFilter === 'Performance') fetchPerformanceOverview();
-  };
+  const [salaryLoading,      setSalaryLoading]      = useState(false);
+  const [salarySearch,       setSalarySearch]       = useState('');
+  const [expandedEmployees,  setExpandedEmployees]  = useState({});
 
   const toggleEmployeeExpansion = (empId) =>
     setExpandedEmployees(prev => ({ ...prev, [empId]: !prev[empId] }));
 
   // ── Presets ────────────────────────────────────────────────────────────────
   const toISO = (d) => d.toISOString().split('T')[0];
-  const today = () => toISO(new Date());
+  const todayISO = () => toISO(new Date());
 
-  const applyPreset = (preset) => {
-    const now = new Date();
+  /**
+   * Pay period: 18th of month → 17th of next month.
+   * If today >= 18  → period start = 18th of THIS month,  end = 17th of NEXT month
+   * If today <= 17  → period start = 18th of LAST month,  end = 17th of THIS month
+   */
+  const getCurrentPayPeriod = () => {
+    const now   = new Date();
+    const day   = now.getDate();
+    const yr    = now.getFullYear();
+    const mo    = now.getMonth(); // 0-based
+
     let from, to;
-
-    if (preset === 'today') {
-      from = today(); to = today();
-    } else if (preset === 'week') {
-      const d = new Date();
-      d.setDate(d.getDate() - d.getDay());
-      from = toISO(d); to = today();
-    } else if (preset === 'month') {
-      from = toISO(new Date(now.getFullYear(), now.getMonth(), 1));
-      to   = toISO(new Date(now.getFullYear(), now.getMonth() + 1, 0));
-    } else if (preset === 'lastMonth') {
-      from = toISO(new Date(now.getFullYear(), now.getMonth() - 1, 1));
-      to   = toISO(new Date(now.getFullYear(), now.getMonth(), 0));
+    if (day >= 18) {
+      // e.g. today = Mar 19  → 18 Mar – 17 Apr
+      from = new Date(yr, mo,     19);
+      to   = new Date(yr, mo + 1, 18);
+    } else {
+      // e.g. today = Mar 3   → 18 Feb – 17 Mar
+      from = new Date(yr, mo - 1, 19);
+      to   = new Date(yr, mo,     18);
     }
-
-    if (from && to) {
-      setFromDate(from); setToDate(to);
-      setSalaryFromDate(from); setSalaryToDate(to);
-    }
+    return { from: toISO(from), to: toISO(to) };
   };
 
-  // ── Salary ─────────────────────────────────────────────────────────────────
+  const getLastPayPeriod = () => {
+    const now = new Date();
+    const day = now.getDate();
+    const yr  = now.getFullYear();
+    const mo  = now.getMonth();
+
+    let from, to;
+    if (day >= 18) {
+      // current period is 18 this month → 17 next; last = 18 last month → 17 this month
+      from = new Date(yr, mo - 1, 19);
+      to   = new Date(yr, mo,     18);
+    } else {
+      // current period is 18 two months ago → 17 last month
+      from = new Date(yr, mo - 2, 19);
+      to   = new Date(yr, mo - 1, 18);
+    }
+    return { from: toISO(from), to: toISO(to) };
+  };
+
+  /**
+   * Current week: Monday → Sunday (ISO week).
+   * If today IS Sunday (getDay()===0) we treat it as day 7, so Monday is -6 days.
+   */
+  const getCurrentWeek = () => {
+    const now     = new Date();
+    const dayOfWk = now.getDay(); // 0=Sun … 6=Sat
+    const diffToMon = dayOfWk === 0 ? -6 : 1 - dayOfWk;
+    const mon = new Date(now);
+    mon.setDate(now.getDate() + diffToMon);
+    const sun = new Date(mon);
+    sun.setDate(mon.getDate() + 6);
+    return { from: toISO(mon), to: toISO(sun) };
+  };
+
+  const resolvePreset = (preset) => {
+    if (preset === 'today')     return { from: todayISO(), to: todayISO() };
+    if (preset === 'week')      return getCurrentWeek();
+    if (preset === 'month')     return getCurrentPayPeriod();
+    if (preset === 'lastMonth') return getLastPayPeriod();
+    return null;
+  };
+
+  const applyPresetS1 = (preset) => {
+    const range = resolvePreset(preset);
+    if (range) { setS1FromDate(range.from); setS1ToDate(range.to); }
+  };
+
+  const applyPresetS2 = (preset) => {
+    const range = resolvePreset(preset);
+    if (range) { setS2FromDate(range.from); setS2ToDate(range.to); }
+  };
+
+  const applyPresetSalary = (preset) => {
+    const range = resolvePreset(preset);
+    if (range) { setSalaryFromDate(range.from); setSalaryToDate(range.to); }
+  };
+
+  // ── Salary fetch ───────────────────────────────────────────────────────────
   const fetchSalarySummary = async () => {
     setSalaryLoading(true);
     try {
       const res = await axios.post(
         '/api/payroll/report',
-        {
-          fromDate: toBackendDate(salaryFromDate),
-          toDate:   toBackendDate(salaryToDate),
-          search:   salarySearch
-        },
+        { fromDate: toBackendDate(salaryFromDate), toDate: toBackendDate(salaryToDate), search: salarySearch },
         { headers: { Authorization: `Bearer ${getToken()}` } }
       );
       setSalarySummary(res.data.report     || []);
-      setSalaryTotals(res.data.grandTotals || {
-        totalBaseSalary: 0, totalOT: 0, totalDeductions: 0, totalNetPayable: 0
-      });
+      setSalaryTotals(res.data.grandTotals || { totalBaseSalary: 0, totalOT: 0, totalDeductions: 0, totalNetPayable: 0 });
     } catch {
       toast.error('Failed to load salary data');
     } finally {
@@ -210,12 +342,7 @@ export default function PayrollReports() {
     }
   };
 
-  // ── Section 2: filtered list ───────────────────────────────────────────────
-  const filteredAttendanceList = attendanceList.filter(item =>
-    !selectedEmployee || item.name.toLowerCase().includes(selectedEmployee.toLowerCase())
-  );
-
-  // ── Shared date picker ─────────────────────────────────────────────────────
+  // ── Shared components ──────────────────────────────────────────────────────
   const DatePickerField = ({ label, value, onChange, pickerRef, minDate }) => (
     <div className="relative">
       <label className="block text-sm font-medium text-gray-700 mb-2">{label}</label>
@@ -239,6 +366,115 @@ export default function PayrollReports() {
     }
   };
 
+  // ── Attendance chart + table block (reusable for both sections) ────────────
+  const AttendanceBlock = ({ chart, list, clickedType, setClickedType, employeeLabel }) => (
+    <>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div>
+          {chart.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie data={chart} cx="50%" cy="50%" outerRadius={80}
+                  labelLine={false}
+                  label={({ name, percentage }) => `${name}: ${percentage}%`}
+                  dataKey="value"
+                  onClick={entry => setClickedType(entry.name)}>
+                  {chart.map((_, i) => (
+                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex items-center justify-center h-64 text-gray-400">No data — click Load</div>
+          )}
+        </div>
+        <div className="space-y-2">
+          {chart.map((item, i) => (
+            <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+              <div className="w-4 h-4 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
+              <span className="font-medium text-gray-800">{item.name}</span>
+              <span className="ml-auto text-gray-600">{item.value}</span>
+              <span className="text-gray-500">({item.percentage}%)</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {clickedType && list.length > 0 && (
+        <div className="mt-6 border-t pt-6 max-h-96 overflow-y-auto">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">
+            {clickedType}{employeeLabel ? ` — ${employeeLabel}` : ''}
+          </h3>
+          <table className="w-full text-sm">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="px-4 py-2 text-left">Date</th>
+                <th className="px-4 py-2 text-left">Employee</th>
+                <th className="px-4 py-2 text-left">Type</th>
+                <th className="px-4 py-2 text-left">Reason</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {list
+                .filter(item => item.type.toLowerCase() === clickedType.toLowerCase())
+                .map((item, i) => (
+                  <tr key={i} className="hover:bg-gray-50">
+                    <td className="px-4 py-2">{item.date}</td>
+                    <td className="px-4 py-2">{item.name}</td>
+                    <td className="px-4 py-2">{item.type}</td>
+                    <td className="px-4 py-2 text-gray-500">{item.reason || '—'}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+
+  const PerformanceBlock = ({ data }) => (
+    data.length > 0 ? (
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="px-4 py-2 text-left">Employee</th>
+              <th className="px-4 py-2 text-center">Score</th>
+              <th className="px-4 py-2 text-center">Present</th>
+              <th className="px-4 py-2 text-center">Absent</th>
+              <th className="px-4 py-2 text-center">Late</th>
+              <th className="px-4 py-2 text-center">Leave</th>
+              <th className="px-4 py-2 text-left">Rating</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {data.map(emp => (
+              <tr key={emp.empId} className="hover:bg-gray-50">
+                <td className="px-4 py-2 font-medium">
+                  {emp.name} <span className="text-xs text-gray-500">({emp.empId})</span>
+                </td>
+                <td className="px-4 py-2 text-center font-bold text-blue-600">{emp.performanceScore}</td>
+                <td className="px-4 py-2 text-center text-green-600">{emp.presentDays}</td>
+                <td className="px-4 py-2 text-center text-red-600">{emp.absentDays}</td>
+                <td className="px-4 py-2 text-center text-yellow-600">{emp.lateDays}</td>
+                <td className="px-4 py-2 text-center text-blue-600">{emp.leaveDays}</td>
+                <td className="px-4 py-2">
+                  <span className={`px-2 py-1 rounded text-xs font-semibold ${ratingColor(emp.rating)}`}>
+                    {emp.rating}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    ) : (
+      <div className="text-center py-8 text-gray-400">No data — select a date range and click Load</div>
+    )
+  );
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
 
@@ -255,17 +491,17 @@ export default function PayrollReports() {
 
       <div className="flex-1 overflow-auto p-4 md:p-6 space-y-8">
 
-        {/* ═══ Section 1: All Employees — Attendance & Performance ═══════════ */}
+        {/* ═══ Section 1: ALL Employees — Attendance & Performance ════════════ */}
         <section className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-bold text-gray-800 mb-6">Section 1: Attendance &amp; Performance Overview</h2>
+          <h2 className="text-xl font-bold text-gray-800 mb-6">Section 1: Attendance &amp; Performance Overview (All Employees)</h2>
 
           <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
-            <DatePickerField label="From" value={fromDate} onChange={setFromDate} pickerRef={attFromRef} />
-            <DatePickerField label="To"   value={toDate}   onChange={setToDate}   pickerRef={attToRef}   minDate={fromDate} />
+            <DatePickerField label="From" value={s1FromDate} onChange={setS1FromDate} pickerRef={attFromRef} />
+            <DatePickerField label="To"   value={s1ToDate}   onChange={setS1ToDate}   pickerRef={attToRef}   minDate={s1FromDate} />
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">View</label>
-              <select value={sectionFilter} onChange={e => setSectionFilter(e.target.value)}
+              <select value={s1Filter} onChange={e => setS1Filter(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white">
                 <option value="Attendance">Attendance</option>
                 <option value="Performance">Performance</option>
@@ -275,148 +511,45 @@ export default function PayrollReports() {
             <div /> {/* spacer */}
 
             <div className="flex items-end">
-              <button onClick={loadSectionData} disabled={attendanceLoading || performanceLoading}
+              <button onClick={loadS1Data} disabled={s1Loading}
                 className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50">
-                {attendanceLoading || performanceLoading ? 'Loading...' : 'Load'}
+                {s1Loading ? 'Loading...' : 'Load'}
               </button>
             </div>
           </div>
 
-          {/* Presets */}
           <div className="flex flex-wrap gap-2 mb-6">
             {[['today','Today'],['week','This Week'],['month','This Month']].map(([p, label]) => (
-              <button key={p} onClick={() => applyPreset(p)}
+              <button key={p} onClick={() => applyPresetS1(p)}
                 className="px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm">
                 {label}
               </button>
             ))}
           </div>
 
-          {/* Attendance view */}
-          {sectionFilter === 'Attendance' && (
-            <>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div>
-                  {attendanceChart.length > 0 ? (
-                    <ResponsiveContainer width="100%" height={300}>
-                      <PieChart>
-                        <Pie data={attendanceChart} cx="50%" cy="50%" outerRadius={80}
-                          labelLine={false}
-                          label={({ name, percentage }) => `${name}: ${percentage}%`}
-                          dataKey="value"
-                          onClick={entry => setClickedChartType(entry.name)}>
-                          {attendanceChart.map((_, i) => (
-                            <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="flex items-center justify-center h-64 text-gray-400">No data — click Load</div>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  {attendanceChart.map((item, i) => (
-                    <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
-                      <span className="font-medium text-gray-800">{item.name}</span>
-                      <span className="ml-auto text-gray-600">{item.value}</span>
-                      <span className="text-gray-500">({item.percentage}%)</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {clickedChartType && attendanceList.length > 0 && (
-                <div className="mt-6 border-t pt-6 max-h-96 overflow-y-auto">
-                  <h3 className="text-lg font-semibold text-gray-800 mb-4">{clickedChartType} Employees</h3>
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-100">
-                      <tr>
-                        <th className="px-4 py-2 text-left">Employee</th>
-                        <th className="px-4 py-2 text-left">Type</th>
-                        <th className="px-4 py-2 text-left">Count</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {(() => {
-                        const filtered = attendanceList.filter(
-                          item => item.type.toLowerCase() === clickedChartType.toLowerCase()
-                        );
-                        const grouped = filtered.reduce((acc, item) => {
-                          acc[item.name] = (acc[item.name] || 0) + 1;
-                          return acc;
-                        }, {});
-                        return Object.entries(grouped).map(([name, count], i) => (
-                          <tr key={i} className="hover:bg-gray-50">
-                            <td className="px-4 py-2">{name}</td>
-                            <td className="px-4 py-2">{clickedChartType}</td>
-                            <td className="px-4 py-2 font-medium">{count}</td>
-                          </tr>
-                        ));
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </>
+          {s1Filter === 'Attendance' && (
+            <AttendanceBlock
+              chart={s1AttChart}
+              list={s1AttList}
+              clickedType={s1ClickedType}
+              setClickedType={setS1ClickedType}
+              employeeLabel={null}
+            />
           )}
-
-          {/* Performance view */}
-          {sectionFilter === 'Performance' && (
-            performanceData.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-100">
-                    <tr>
-                      <th className="px-4 py-2 text-left">Employee</th>
-                      <th className="px-4 py-2 text-center">Score</th>
-                      <th className="px-4 py-2 text-center">Present</th>
-                      <th className="px-4 py-2 text-center">Absent</th>
-                      <th className="px-4 py-2 text-center">Late</th>
-                      <th className="px-4 py-2 text-center">Leave</th>
-                      <th className="px-4 py-2 text-left">Rating</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {performanceData.map(emp => (
-                      <tr key={emp.empId} className="hover:bg-gray-50">
-                        <td className="px-4 py-2 font-medium">
-                          {emp.name} <span className="text-xs text-gray-500">({emp.empId})</span>
-                        </td>
-                        <td className="px-4 py-2 text-center font-bold text-blue-600">{emp.performanceScore}</td>
-                        <td className="px-4 py-2 text-center text-green-600">{emp.presentDays}</td>
-                        <td className="px-4 py-2 text-center text-red-600">{emp.absentDays}</td>
-                        <td className="px-4 py-2 text-center text-yellow-600">{emp.lateDays}</td>
-                        <td className="px-4 py-2 text-center text-blue-600">{emp.leaveDays}</td>
-                        <td className="px-4 py-2">
-                          <span className={`px-2 py-1 rounded text-xs font-semibold ${ratingColor(emp.rating)}`}>
-                            {emp.rating}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-center py-8 text-gray-400">No data — select a date range and click Load</div>
-            )
-          )}
+          {s1Filter === 'Performance' && <PerformanceBlock data={s1PerfData} />}
         </section>
 
-        {/* ═══ Section 2: Individual Employee ═══════════════════════════════ */}
+        {/* ═══ Section 2: INDIVIDUAL Employee — Attendance & Performance ════ */}
         <section className="bg-white rounded-lg shadow p-6">
           <h2 className="text-xl font-bold text-gray-800 mb-6">Section 2: Individual Attendance &amp; Performance</h2>
 
           <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
-            <DatePickerField label="From" value={fromDate} onChange={setFromDate} pickerRef={attFromRef} />
-            <DatePickerField label="To"   value={toDate}   onChange={setToDate}   pickerRef={attToRef}   minDate={fromDate} />
+            <DatePickerField label="From" value={s2FromDate} onChange={setS2FromDate} pickerRef={indFromRef} />
+            <DatePickerField label="To"   value={s2ToDate}   onChange={setS2ToDate}   pickerRef={indToRef}   minDate={s2FromDate} />
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">View</label>
-              <select value={sectionFilter} onChange={e => setSectionFilter(e.target.value)}
+              <select value={s2Filter} onChange={e => setS2Filter(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white">
                 <option value="Attendance">Attendance</option>
                 <option value="Performance">Performance</option>
@@ -428,13 +561,13 @@ export default function PayrollReports() {
               <label className="block text-sm font-medium text-gray-700 mb-2">Employee</label>
               <input type="text" placeholder="Type to search..."
                 value={selectedEmployee}
-                onChange={e => { setSelectedEmployee(e.target.value); setEmployeeDropdownOpen(true); }}
+                onChange={e => { setSelectedEmployee(e.target.value); setSelectedEmployeeId(''); setEmployeeDropdownOpen(true); }}
                 onFocus={() => setEmployeeDropdownOpen(true)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500" />
 
               {employeeDropdownOpen && (
                 <ul className="absolute z-50 w-full max-h-48 overflow-y-auto bg-white border border-gray-300 rounded-lg mt-1 shadow-lg">
-                  <li onClick={() => { setSelectedEmployee(''); setEmployeeDropdownOpen(false); }}
+                  <li onClick={() => { setSelectedEmployee(''); setSelectedEmployeeId(''); setEmployeeDropdownOpen(false); }}
                     className="px-3 py-2 cursor-pointer hover:bg-blue-50 text-sm text-gray-500 italic border-b">
                     All employees
                   </li>
@@ -448,6 +581,7 @@ export default function PayrollReports() {
                       <li key={emp._id}
                         onClick={() => {
                           setSelectedEmployee(`${emp.firstName} ${emp.lastName}`);
+                          setSelectedEmployeeId(emp._id);
                           setEmployeeDropdownOpen(false);
                         }}
                         className="px-3 py-2 cursor-pointer hover:bg-gray-100 text-sm">
@@ -467,137 +601,32 @@ export default function PayrollReports() {
             </div>
 
             <div className="flex items-end">
-              <button onClick={loadSectionData} disabled={attendanceLoading || performanceLoading}
+              <button onClick={loadS2Data} disabled={s2Loading}
                 className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50">
-                {attendanceLoading || performanceLoading ? 'Loading...' : 'Load'}
+                {s2Loading ? 'Loading...' : 'Load'}
               </button>
             </div>
           </div>
 
-          {/* Presets */}
           <div className="flex flex-wrap gap-2 mb-6">
             {[['today','Today'],['week','This Week'],['month','This Month']].map(([p, label]) => (
-              <button key={p} onClick={() => applyPreset(p)}
+              <button key={p} onClick={() => applyPresetS2(p)}
                 className="px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm">
                 {label}
               </button>
             ))}
           </div>
 
-          {/* Attendance view — filtered by selectedEmployee */}
-          {sectionFilter === 'Attendance' && (
-            <>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div>
-                  {attendanceChart.length > 0 ? (
-                    <ResponsiveContainer width="100%" height={300}>
-                      <PieChart>
-                        <Pie data={attendanceChart} cx="50%" cy="50%" outerRadius={80}
-                          labelLine={false}
-                          label={({ name, percentage }) => `${name}: ${percentage}%`}
-                          dataKey="value"
-                          onClick={entry => setClickedChartType(entry.name)}>
-                          {attendanceChart.map((_, i) => (
-                            <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="flex items-center justify-center h-64 text-gray-400">No data — click Load</div>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  {attendanceChart.map((item, i) => (
-                    <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                      <div className="w-4 h-4 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
-                      <span className="font-medium text-gray-800">{item.name}</span>
-                      <span className="ml-auto text-gray-600">{item.value}</span>
-                      <span className="text-gray-500">({item.percentage}%)</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {clickedChartType && filteredAttendanceList.length > 0 && (
-                <div className="mt-6 border-t pt-6 max-h-96 overflow-y-auto">
-                  <h3 className="text-lg font-semibold text-gray-800 mb-4">
-                    {clickedChartType} — {selectedEmployee || 'All Employees'}
-                  </h3>
-                  <table className="w-full text-sm">
-                    <thead className="bg-gray-100">
-                      <tr>
-                        <th className="px-4 py-2 text-left">Date</th>
-                        <th className="px-4 py-2 text-left">Employee</th>
-                        <th className="px-4 py-2 text-left">Type</th>
-                        <th className="px-4 py-2 text-left">Reason</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {filteredAttendanceList
-                        .filter(item => item.type.toLowerCase() === clickedChartType.toLowerCase())
-                        .map((item, i) => (
-                          <tr key={i} className="hover:bg-gray-50">
-                            <td className="px-4 py-2">{item.date}</td>
-                            <td className="px-4 py-2">{item.name}</td>
-                            <td className="px-4 py-2">{item.type}</td>
-                            <td className="px-4 py-2 text-gray-500">{item.reason || '—'}</td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </>
+          {s2Filter === 'Attendance' && (
+            <AttendanceBlock
+              chart={s2AttChart}
+              list={s2AttList}
+              clickedType={s2ClickedType}
+              setClickedType={setS2ClickedType}
+              employeeLabel={selectedEmployee || 'All Employees'}
+            />
           )}
-
-          {/* Performance view — filtered by selectedEmployee */}
-          {sectionFilter === 'Performance' && (
-            performanceData.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-100">
-                    <tr>
-                      <th className="px-4 py-2 text-left">Employee</th>
-                      <th className="px-4 py-2 text-center">Score</th>
-                      <th className="px-4 py-2 text-center">Present</th>
-                      <th className="px-4 py-2 text-center">Absent</th>
-                      <th className="px-4 py-2 text-center">Late</th>
-                      <th className="px-4 py-2 text-center">Leave</th>
-                      <th className="px-4 py-2 text-left">Rating</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {performanceData
-                      .filter(emp =>
-                        !selectedEmployee ||
-                        emp.name.toLowerCase().includes(selectedEmployee.toLowerCase())
-                      )
-                      .map(emp => (
-                        <tr key={emp.empId} className="hover:bg-gray-50">
-                          <td className="px-4 py-2 font-medium">
-                            {emp.name} <span className="text-xs text-gray-500">({emp.empId})</span>
-                          </td>
-                          <td className="px-4 py-2 text-center font-bold text-blue-600">{emp.performanceScore}</td>
-                          <td className="px-4 py-2 text-center text-green-600">{emp.presentDays}</td>
-                          <td className="px-4 py-2 text-center text-red-600">{emp.absentDays}</td>
-                          <td className="px-4 py-2 text-center text-yellow-600">{emp.lateDays}</td>
-                          <td className="px-4 py-2 text-center text-blue-600">{emp.leaveDays}</td>
-                          <td className="px-4 py-2">
-                            <span className={`px-2 py-1 rounded text-xs font-semibold ${ratingColor(emp.rating)}`}>
-                              {emp.rating}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-center py-8 text-gray-400">No data — select a date range and click Load</div>
-            )
-          )}
+          {s2Filter === 'Performance' && <PerformanceBlock data={s2PerfData} />}
         </section>
 
         {/* ═══ Section 3: Salary & Payroll ══════════════════════════════════ */}
@@ -615,10 +644,9 @@ export default function PayrollReports() {
             </div>
           </div>
 
-          {/* Presets */}
           <div className="flex flex-wrap gap-2 mb-6">
             {[['today','Today'],['month','This Month'],['lastMonth','Last Month']].map(([p, label]) => (
-              <button key={p} onClick={() => applyPreset(p)}
+              <button key={p} onClick={() => applyPresetSalary(p)}
                 className="px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-sm">
                 {label}
               </button>

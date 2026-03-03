@@ -9,8 +9,6 @@ import { getDateMinusDays, getTodayDate, parseDate } from '../../utils/dateForma
 
 const PRIVILEGED_ROLES = ['admin', 'superadmin'];
 
-// ─── resolve current user role — always read from the user object in
-//     localStorage so it stays in sync with what the server issued.
 function getCurrentUserRole() {
   try {
     const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -20,17 +18,28 @@ function getCurrentUserRole() {
   }
 }
 
+// FIX 1 — null-safe time display helper.
+// Backend returns null for missing times (not '--'). Guard both so this works
+// before and after the backend deploy.
+const displayTime = (val) => (val && val !== '--') ? val : '--';
+
 // ─── Attendance Form Modal (Add & Edit) ──────────────────────────────────────
 function AttendanceFormModal({ mode = 'add', record = null, onClose, onSuccess, currentUserRole }) {
   const isEdit        = mode === 'edit';
   const hiddenDateRef = useRef(null);
 
+  // FIX 2 — inTime/outTime pre-fill in edit mode.
+  // Old code: record?.inTime !== '--' ? record?.inTime : ''
+  // When backend returns null the condition is truthy, so null gets passed to the
+  // input value and the field renders the text "null". Fix: treat both null and '--'.
+  const parseTime = (val) => (val && val !== '--') ? val : '';
+
   const [form, setForm] = useState({
-    empId:            isEdit ? (record?.empId?._id || record?.empId || '') : '',
+    empId:            '',   // only used in Add mode; Edit resolves empId in handleSubmit
     date:             isEdit ? (record?.dateFormatted || '') : getTodayDate(),
     status:           isEdit ? (record?.status || 'Present') : 'Present',
-    inTime:           isEdit ? (record?.inTime  !== '--' ? record?.inTime  : '') : '',
-    outTime:          isEdit ? (record?.outTime !== '--' ? record?.outTime : '') : '',
+    inTime:           isEdit ? parseTime(record?.inTime)  : '',
+    outTime:          isEdit ? parseTime(record?.outTime) : '',
     outNextDay:       isEdit ? (record?.outNextDay || false) : false,
     deductionDetails: isEdit ? (record?.financials?.deductionDetails || []) : [],
     otDetails:        isEdit ? (record?.financials?.otDetails        || []) : [],
@@ -49,7 +58,6 @@ function AttendanceFormModal({ mode = 'add', record = null, onClose, onSuccess, 
       axios.get('/api/employees?status=Active', { headers: { Authorization: `Bearer ${token}` } })
         .then(res => {
           let list = res.data?.employees || [];
-          // admin can only add attendance for regular employees
           if (currentUserRole === 'admin') {
             list = list.filter(emp => !PRIVILEGED_ROLES.includes(emp.role));
           }
@@ -109,8 +117,38 @@ function AttendanceFormModal({ mode = 'add', record = null, onClose, onSuccess, 
     setSaving(true);
     try {
       const token = localStorage.getItem('token');
+
+      // FIX 3 — empId resolution for edit mode.
+      // Old code: record?.empId?._id || record?.empId
+      // Problem: after the /range endpoint populates empId and it is JSON-serialised
+      // to the frontend, the empId field in the attendance record can be either:
+      //   (a) a plain string ObjectId  — when lean() is used
+      //   (b) a populated object { _id, firstName, … } — when lean() is not used
+      // The old code record?.empId?._id only works for case (b). For case (a),
+      // record?.empId?._id is undefined and falls back to record?.empId which is the
+      // full object — causing the backend to receive an object instead of a string ID.
+      // Fix: handle both shapes explicitly.
+      let resolvedEmpId;
+      if (isEdit) {
+        const raw = record?.empId;
+        if (!raw) {
+          toast.error('Cannot resolve employee ID — please reload and try again.');
+          setSaving(false);
+          return;
+        }
+        if (typeof raw === 'object' && raw !== null) {
+          // populated object shape: { _id: ObjectId|string, firstName, … }
+          resolvedEmpId = raw._id?.toString?.() || String(raw);
+        } else {
+          // plain string or stringified ObjectId
+          resolvedEmpId = String(raw);
+        }
+      } else {
+        resolvedEmpId = form.empId;
+      }
+
       const payload = {
-        empId:            isEdit ? (record?.empId?._id || record?.empId) : form.empId,
+        empId:            resolvedEmpId,
         date:             form.date,
         status:           form.status,
         inTime:           form.inTime  || null,
@@ -182,7 +220,8 @@ function AttendanceFormModal({ mode = 'add', record = null, onClose, onSuccess, 
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 pr-10" />
               <input type="date" ref={hiddenDateRef} className="absolute opacity-0 pointer-events-none"
                 onChange={handleHiddenDateChange} />
-              <button type="button" onClick={() => { try { hiddenDateRef.current?.showPicker(); } catch { hiddenDateRef.current?.focus(); } }}
+              <button type="button"
+                onClick={() => { try { hiddenDateRef.current?.showPicker(); } catch { hiddenDateRef.current?.focus(); } }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-blue-500">
                 <Calendar size={16} />
               </button>
@@ -240,8 +279,9 @@ function AttendanceFormModal({ mode = 'add', record = null, onClose, onSuccess, 
             <div className="space-y-1">
               {form.deductionDetails.map((entry, idx) => (
                 <div key={`d-${idx}`} className="flex justify-between text-xs bg-white border rounded px-2 py-1">
-                  <span>PKR {entry.amount} - {entry.reason}</span>
-                  <button type="button" onClick={() => removeDetail('deductionDetails', idx)} className="text-red-600 hover:text-red-800">Remove</button>
+                  <span>PKR {entry.amount} — {entry.reason}</span>
+                  <button type="button" onClick={() => removeDetail('deductionDetails', idx)}
+                    className="text-red-600 hover:text-red-800">Remove</button>
                 </div>
               ))}
             </div>
@@ -270,7 +310,9 @@ function AttendanceFormModal({ mode = 'add', record = null, onClose, onSuccess, 
                     className="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
                   <select value={otDraft.rate} onChange={e => setOtDraft(prev => ({ ...prev, rate: e.target.value }))}
                     className="border border-gray-300 rounded-lg px-3 py-2 text-sm">
-                    <option value="1">1.0x</option><option value="1.5">1.5x</option><option value="2">2.0x</option>
+                    <option value="1">1.0x</option>
+                    <option value="1.5">1.5x</option>
+                    <option value="2">2.0x</option>
                   </select>
                 </>
               )}
@@ -282,8 +324,12 @@ function AttendanceFormModal({ mode = 'add', record = null, onClose, onSuccess, 
             <div className="space-y-1">
               {form.otDetails.map((entry, idx) => (
                 <div key={`ot-${idx}`} className="flex justify-between text-xs bg-white border rounded px-2 py-1">
-                  <span>{entry.type === 'manual' ? `PKR ${entry.amount}` : `${entry.hours}h x ${entry.rate}x`} - {entry.reason}</span>
-                  <button type="button" onClick={() => removeDetail('otDetails', idx)} className="text-red-600 hover:text-red-800">Remove</button>
+                  <span>
+                    {entry.type === 'manual' ? `PKR ${entry.amount}` : `${entry.hours}h × ${entry.rate}x`}
+                    {' — '}{entry.reason}
+                  </span>
+                  <button type="button" onClick={() => removeDetail('otDetails', idx)}
+                    className="text-red-600 hover:text-red-800">Remove</button>
                 </div>
               ))}
             </div>
@@ -323,8 +369,6 @@ export default function ManualAttendance() {
   const [editRecord,   setEditRecord]   = useState(null);
   const [detailsModal, setDetailsModal] = useState(null);
 
-  // Always derive role from the user object — not from the bare 'role' key
-  // which may be stale after a role change without re-login.
   const userRole     = getCurrentUserRole();
   const isSuperAdmin = userRole === 'superadmin';
   const isAdmin      = userRole === 'admin' || isSuperAdmin;
@@ -342,9 +386,6 @@ export default function ManualAttendance() {
 
       let records = response.data?.attendance || [];
 
-      // superadmin records are already excluded by the backend (populate match filter).
-      // admin should only see employee attendance — filter out any admin/superadmin
-      // records using the empRole field the backend now returns.
       if (userRole === 'admin') {
         records = records.filter(r => !PRIVILEGED_ROLES.includes(r.empRole));
       }
@@ -386,13 +427,9 @@ export default function ManualAttendance() {
     setter(`${d}/${m}/${y}`);
   };
 
-  // Guard: admin cannot edit attendance of another admin/superadmin
-  // empRole is now returned by the backend on each attendance record
   const canEditRecord = (record) => {
     if (isSuperAdmin) return true;
-    if (userRole === 'admin') {
-      return !PRIVILEGED_ROLES.includes(record.empRole);
-    }
+    if (userRole === 'admin') return !PRIVILEGED_ROLES.includes(record.empRole);
     return false;
   };
 
@@ -412,20 +449,21 @@ export default function ManualAttendance() {
        'Hours Worked','OT Amount','Total Deduction','Daily Earning','Last Modified'].join(',')
     ];
     attendance.forEach(record => {
+      // FIX 4 — export: null-safe time fields; quote-escape name for CSV safety
       csv.push([
-        record.dateFormatted                              || '--',
-        record.empNumber                                  || '--',
-        record.empName                                    || '--',
-        record.department                                 || '--',
-        record.status                                     || '--',
-        record.inTime                                     || '--',
-        record.outTime                                    || '--',
-        (record.financials?.hoursWorked?.toFixed(2))     || '0.00',
-        (record.financials?.otAmount?.toFixed(2))        || '0.00',
-        (record.financials?.deduction?.toFixed(2))       || '0.00',
-        (record.financials?.finalDayEarning?.toFixed(2)) || '0.00',
-        record.lastModified                              || '--'
-      ].map(v => `"${v}"`).join(','));
+        `"${record.dateFormatted                              || '--'}"`,
+        `"${record.empNumber                                  || '--'}"`,
+        `"${(record.empName || '--').replace(/"/g, '""')}"`,
+        `"${record.department                                 || '--'}"`,
+        `"${record.status                                     || '--'}"`,
+        `"${record.inTime  ?? '--'}"`,
+        `"${record.outTime ?? '--'}"`,
+        `"${(record.financials?.hoursWorked?.toFixed(2))     || '0.00'}"`,
+        `"${(record.financials?.otAmount?.toFixed(2))        || '0.00'}"`,
+        `"${(record.financials?.deduction?.toFixed(2))       || '0.00'}"`,
+        `"${(record.financials?.finalDayEarning?.toFixed(2)) || '0.00'}"`,
+        `"${record.lastModified                              || '--'}"`,
+      ].join(','));
     });
 
     const blob = new Blob([csv.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -566,10 +604,13 @@ export default function ManualAttendance() {
                             {record.status}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-center">{record.inTime}</td>
+                        {/* FIX 1 applied — null-safe display */}
+                        <td className="px-4 py-3 text-center">{displayTime(record.inTime)}</td>
                         <td className="px-4 py-3 text-center">
-                          {record.outTime}
-                          {record.outNextDay && <span className="ml-1 text-xs text-orange-500 font-medium">(+1)</span>}
+                          {displayTime(record.outTime)}
+                          {record.outNextDay && record.outTime &&
+                            <span className="ml-1 text-xs text-orange-500 font-medium">(+1)</span>
+                          }
                         </td>
                         <td className="px-4 py-3 text-right">{(record.financials?.hoursWorked || 0).toFixed(2)}</td>
                         <td className="px-4 py-3 text-right">
@@ -587,7 +628,7 @@ export default function ManualAttendance() {
                         <td className="px-4 py-3 text-right font-semibold">
                           PKR {(record.financials?.finalDayEarning || 0).toFixed(2)}
                         </td>
-                        <td className="px-4 py-3 text-xs text-gray-600">{record.lastModified}</td>
+                        <td className="px-4 py-3 text-xs text-gray-600">{record.lastModified || '--'}</td>
                         {isAdmin && (
                           <td className="px-4 py-3 text-center">
                             <button
@@ -643,14 +684,19 @@ export default function ManualAttendance() {
                       <p><span className="font-medium">Date:</span> {record.dateFormatted}</p>
                       <p><span className="font-medium">Dept:</span> {record.department}</p>
                       <p>
-                        <span className="font-medium">In/Out:</span> {record.inTime} - {record.outTime}
-                        {record.outNextDay && <span className="ml-1 text-xs text-orange-500">(+1 day)</span>}
+                        {/* FIX 1 applied — mobile null-safe display */}
+                        <span className="font-medium">In/Out:</span> {displayTime(record.inTime)} — {displayTime(record.outTime)}
+                        {record.outNextDay && record.outTime &&
+                          <span className="ml-1 text-xs text-orange-500">(+1 day)</span>
+                        }
                       </p>
                       <p><span className="font-medium">Hours:</span> {(record.financials?.hoursWorked || 0).toFixed(2)}</p>
                       <p><span className="font-medium">OT:</span> PKR {(record.financials?.otAmount || 0).toFixed(2)}</p>
                       <p><span className="font-medium">Deduction:</span> PKR {(record.financials?.deduction || 0).toFixed(2)}</p>
                       <p><span className="font-medium">Earning:</span> PKR {(record.financials?.finalDayEarning || 0).toFixed(2)}</p>
-                      <p className="text-xs text-gray-500"><span className="font-medium">Modified:</span> {record.lastModified}</p>
+                      <p className="text-xs text-gray-500">
+                        <span className="font-medium">Modified:</span> {record.lastModified || '--'}
+                      </p>
                     </div>
                   </div>
                 );
@@ -690,7 +736,9 @@ export default function ManualAttendance() {
               <h3 className="font-semibold text-gray-800">
                 {detailsModal.type === 'ot' ? 'OT Details' : 'Deduction Details'} — {detailsModal.record.empName}
               </h3>
-              <button onClick={() => setDetailsModal(null)} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+              <button onClick={() => setDetailsModal(null)} className="text-gray-400 hover:text-gray-600">
+                <X size={18} />
+              </button>
             </div>
             <div className="p-4 space-y-2 max-h-80 overflow-auto">
               {(() => {
@@ -701,7 +749,7 @@ export default function ManualAttendance() {
                 return entries.map((entry, i) => (
                   <div key={i} className="border rounded-lg p-2 text-sm bg-gray-50">
                     {detailsModal.type === 'ot' ? (
-                      <p>{entry.type === 'manual' ? `Amount: PKR ${entry.amount}` : `Hours: ${entry.hours} x ${entry.rate}x`} · {entry.reason}</p>
+                      <p>{entry.type === 'manual' ? `Amount: PKR ${entry.amount}` : `Hours: ${entry.hours} × ${entry.rate}x`} · {entry.reason}</p>
                     ) : (
                       <p>Amount: PKR {entry.amount} · {entry.reason}</p>
                     )}

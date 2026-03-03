@@ -25,10 +25,13 @@ export default function AdminSidebar({ isOpen, isMobile, onClose }) {
 
   const isActive = (path) => location.pathname === path;
 
-  const handleLogout = () => {
-    logout();
-    toast.success('Logged out successfully');
-    navigate('/login');
+   const handleLogout = () => {
+
+    logout(); // clear localStorage FIRST
+    toast.success("Logged out successfully");
+
+    navigate("/", { replace: true }); // then navigate
+    window.location.reload(); // ensure all state is reset
   };
 
   // FIX #1: on mobile, clicking a nav link should close the sidebar
