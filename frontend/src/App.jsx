@@ -1,184 +1,169 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { isAuthenticated, getRole } from './services/auth';
+import { Toaster } from 'react-hot-toast';   // ← ADD THIS
 
-// Auth Pages
-import Login from './components/Auth/Login';
-import EmployeeOnboarding from './components/Auth/EmployeeOnboarding';
-import ProtectedRoute from './components/Auth/ProtectedRoute';
+// ── Providers ──────────────────────────────────────────────────────────────
+import { AuthProvider, useAuth }             from './context/AuthContext.js';
+import { NotificationProvider }              from './context/NotificationContext.js';
 
-// Layouts (ALREADY EXIST, just use them differently)
-import AdminDashboard from './components/Admin/AdminDashboard';
-import AdminSidebar from './components/Admin/Sidebar';
+// ── Auth ───────────────────────────────────────────────────────────────────
+import Login               from './components/Auth/Login';
+import EmployeeOnboarding  from './components/Auth/EmployeeOnboarding';
+import ProtectedRoute      from './components/Auth/ProtectedRoute';
+
+// ── Shared layout ──────────────────────────────────────────────────────────
 import Header from './components/Common/Header';
 
-import EmployeeDashboard from './components/Employee/EmployeeDashboard';
-import EmployeeSidebar from './components/Employee/EmployeeSidebar';
+// ── Admin ──────────────────────────────────────────────────────────────────
+import AdminSidebar        from './components/Admin/Sidebar';
+import AdminDashboard      from './components/Admin/AdminDashboard';
+import ManageEmployees     from './components/Admin/ManageEmployees';
+import ManualAttendance    from './components/Admin/ManualAttendance';
+import PayrollReports      from './components/Admin/PayrollReports';
+import NotificationCenter  from './components/Admin/NotificationCenter';
 
-// Admin Pages
-import ManageEmployees from './components/Admin/ManageEmployees';
-import ManualAttendance from './components/Admin/ManualAttendance';
-import PayrollReports from './components/Admin/PayrollReports';
-import NotificationCenter from './components/Admin/NotificationCenter';
+// ── Employee ───────────────────────────────────────────────────────────────
+import EmployeeSidebar     from './components/Employee/EmployeeSidebar';
+import EmployeeDashboard   from './components/Employee/EmployeeDashboard';
+import AttendanceHistory   from './components/Employee/AttendanceHistory';
+import MySalary            from './components/Employee/MySalary';
+import MyRequests          from './components/Employee/MyRequests';
+import Profile             from './components/Employee/Profile';
 
-// Employee Pages
-import AttendanceHistory from './components/Employee/AttendanceHistory';
-import MySalary from './components/Employee/MySalary';
-import MyRequests from './components/Employee/MyRequests';
-import Profile from './components/Employee/Profile';
+import { useWindowSize }   from './hooks/useWindowSize.js';
 
-// NEW: Admin Layout Wrapper (inline, reuses existing components)
+// ─── Shared layout wrapper ────────────────────────────────────────────────────
+
+function AppLayout({ Sidebar, children }) {
+  const { isMobile } = useWindowSize();
+  const [sidebarOpen, setSidebarOpen] = useState(!isMobile);
+
+  return (
+    <div className="flex h-screen bg-gray-100">
+      <Sidebar isOpen={sidebarOpen} isMobile={isMobile} />
+
+      {isMobile && sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-20"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Header onMenuClick={() => setSidebarOpen(v => !v)} />
+        <div className="flex-1 overflow-auto">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Admin layout ─────────────────────────────────────────────────────────────
+
 function AdminLayoutWrapper() {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-
-  React.useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  const handleMenuClick = () => {
-    setSidebarOpen(!sidebarOpen);
-  };
-
   return (
-    <div className="flex h-screen bg-gray-100">
-      {/* PERSISTENT SIDEBAR */}
-      <AdminSidebar isOpen={sidebarOpen} isMobile={isMobile} />
-
-      {/* Overlay for mobile */}
-      {isMobile && sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black bg-opacity-50 z-20"
-          onClick={() => setSidebarOpen(false)}
-        ></div>
-      )}
-
-      {/* MAIN CONTENT */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header onMenuClick={handleMenuClick} />
-        <div className="flex-1 overflow-auto">
-          <Routes>
-            <Route path="/dashboard" element={<AdminDashboard />} />
-            <Route path="/employees" element={<ManageEmployees />} />
-            <Route path="/attendance" element={<ManualAttendance />} />
-            <Route path="/payroll" element={<PayrollReports />} />
-            <Route path="/notifications" element={<NotificationCenter />} />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          </Routes>
-        </div>
-      </div>
-    </div>
+    <AppLayout Sidebar={AdminSidebar}>
+      <Routes>
+        <Route path="dashboard"     element={<AdminDashboard />} />
+        <Route path="employees"     element={<ManageEmployees />} />
+        <Route path="attendance"    element={<ManualAttendance />} />
+        <Route path="payroll"       element={<PayrollReports />} />
+        <Route path="notifications" element={<NotificationCenter />} />
+        <Route path="/"             element={<Navigate to="dashboard" replace />} />
+        <Route path="*"             element={<Navigate to="dashboard" replace />} />
+      </Routes>
+    </AppLayout>
   );
 }
 
-// NEW: Employee Layout Wrapper (inline, reuses existing components)
+// ─── Employee layout ──────────────────────────────────────────────────────────
+
 function EmployeeLayoutWrapper() {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-
-  React.useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
-
-  const handleMenuClick = () => {
-    setSidebarOpen(!sidebarOpen);
-  };
-
   return (
-    <div className="flex h-screen bg-gray-100">
-      {/* PERSISTENT SIDEBAR */}
-      <EmployeeSidebar isOpen={sidebarOpen} isMobile={isMobile} />
-
-      {/* Overlay for mobile */}
-      {isMobile && sidebarOpen && (
-        <div
-          className="fixed inset-0 bg-black bg-opacity-50 z-20"
-          onClick={() => setSidebarOpen(false)}
-        ></div>
-      )}
-
-      {/* MAIN CONTENT */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header onMenuClick={handleMenuClick} />
-        <div className="flex-1 overflow-auto">
-          <Routes>
-            <Route path="/dashboard" element={<EmployeeDashboard />} />
-            <Route path="/attendance" element={<AttendanceHistory />} />
-            <Route path="/salary" element={<MySalary />} />
-            <Route path="/requests" element={<MyRequests />} />
-            <Route path="/profile" element={<Profile />} />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          </Routes>
-        </div>
-      </div>
-    </div>
+    <AppLayout Sidebar={EmployeeSidebar}>
+      <Routes>
+        <Route path="dashboard"  element={<EmployeeDashboard />} />
+        <Route path="attendance" element={<AttendanceHistory />} />
+        <Route path="salary"     element={<MySalary />} />
+        <Route path="requests"   element={<MyRequests />} />
+        <Route path="profile"    element={<Profile />} />
+        <Route path="/"          element={<Navigate to="dashboard" replace />} />
+        <Route path="*"          element={<Navigate to="dashboard" replace />} />
+      </Routes>
+    </AppLayout>
   );
 }
+
+// ─── Root redirect ────────────────────────────────────────────────────────────
+
+function RootRedirect() {
+  const { user, role, loading } = useAuth();
+  if (loading) return null;
+  if (user && role) {
+    return <Navigate to={role === 'admin' || role === 'superadmin' ? '/admin/dashboard' : '/employee/dashboard'} replace />;
+  }
+  return <Navigate to="/login" replace />;
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    setLoading(false);
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-100">
-        <div className="text-center">
-          <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
-          <p className="text-gray-600 font-medium">Loading...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <Router>
-      <Routes>
-        {/* Public Routes */}
-        <Route path="/login" element={<Login />} />
-        <Route path="/join/:token" element={<EmployeeOnboarding />} />
+    <AuthProvider>
+      <NotificationProvider>
+        <Router>
 
-        {/* Admin Routes - Nested with persistent layout */}
-        <Route
-          path="/admin/*"
-          element={
-            <ProtectedRoute requiredRole="admin">
-              <AdminLayoutWrapper />
-            </ProtectedRoute>
-          }
-        />
+          {/* ── Toaster: render ONCE here, inside Router so navigate works in toasts ── */}
+          <Toaster
+            position="top-right"
+            toastOptions={{
+              duration: 4000,
+              style: {
+                borderRadius: '8px',
+                fontSize: '14px',
+              },
+              success: {
+                iconTheme: { primary: '#2563eb', secondary: '#fff' },
+              },
+              error: {
+                iconTheme: { primary: '#dc2626', secondary: '#fff' },
+              },
+            }}
+          />
 
-        {/* Employee Routes - Nested with persistent layout */}
-        <Route
-          path="/employee/*"
-          element={
-            <ProtectedRoute requiredRole="employee">
-              <EmployeeLayoutWrapper />
-            </ProtectedRoute>
-          }
-        />
+          <Routes>
+            {/* Public */}
+            <Route path="/login"       element={<Login />} />
+            <Route path="/join/:token" element={<EmployeeOnboarding />} />
 
-        {/* Default redirect */}
-        <Route
-          path="/"
-          element={
-            isAuthenticated() ? (
-              <Navigate to={getRole() === 'admin' ? '/admin/dashboard' : '/employee/dashboard'} replace />
-            ) : (
-              <Navigate to="/login" replace />
-            )
-          }
-        />
+            {/* Admin — protected */}
+            <Route
+              path="/admin/*"
+              element={
+                <ProtectedRoute requiredRole={['admin', 'superadmin']}>
+                  <AdminLayoutWrapper />
+                </ProtectedRoute>
+              }
+            />
 
-        {/* Catch all */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Router>
+            {/* Employee — protected */}
+            <Route
+              path="/employee/*"
+              element={
+                <ProtectedRoute requiredRole="employee">
+                  <EmployeeLayoutWrapper />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Root + catch-all */}
+            <Route path="/"  element={<RootRedirect />} />
+            <Route path="*"  element={<Navigate to="/" replace />} />
+          </Routes>
+
+        </Router>
+      </NotificationProvider>
+    </AuthProvider>
   );
 }

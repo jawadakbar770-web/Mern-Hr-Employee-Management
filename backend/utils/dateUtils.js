@@ -1,111 +1,165 @@
 /**
- * Date Utility Functions
- * All dates are in dd/mm/yyyy format for API and UI
+ * utils/dateUtils.js
+ * Centralized date utility functions.
+ * All API inputs and CSV dates flow through here for consistent parsing.
  */
 
+// ─── parseDDMMYYYY ────────────────────────────────────────────────────────────
 /**
- * Parse dd/mm/yyyy string to Date object (UTC midnight)
+ * Parse a date string to a Date object at 00:00:00 local time.
+ *
+ * Accepts:
+ *   dd/mm/yyyy          — primary format (API inputs, CSV dates)
+ *   YYYY-MM-DD          — ISO 8601 fallback (HTML date inputs, query params)
+ *   YYYY-MM-DDTHH:mm:ss — ISO datetime (MongoDB returns, JSON payloads)
+ *
+ * Returns null for any invalid or unparseable input.
  */
-export function parseDate(dateStr) {
+export function parseDDMMYYYY(dateStr) {
   if (!dateStr) return null;
 
-  const trimmed = String(dateStr).trim();
-  const parts = trimmed.split('/');
+  const s = String(dateStr).trim();
 
-  if (parts.length !== 3) return null;
+  // ── dd/mm/yyyy ────────────────────────────────────────────────────────────
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+    const [d, m, y] = s.split('/').map(Number);
+    const month = m - 1;  // 0-based
+    if (y < 1900 || y > 2100) return null;
+    const date = new Date(y, month, d, 0, 0, 0, 0);
+    // Validate: guards against 31/02/2024 etc.
+    if (date.getFullYear() !== y || date.getMonth() !== month || date.getDate() !== d) {
+      return null;
+    }
+    return date;
+  }
 
-  const day = parseInt(parts[0]);
-  const month = parseInt(parts[1]);
-  const year = parseInt(parts[2]);
+  // ── YYYY-MM-DD  or  YYYY-MM-DDTHH:mm… ────────────────────────────────────
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const [y, m, d] = s.slice(0, 10).split('-').map(Number);
+    const month = m - 1;
+    if (y < 1900 || y > 2100) return null;
+    const date = new Date(y, month, d, 0, 0, 0, 0);
+    if (date.getFullYear() !== y || date.getMonth() !== month || date.getDate() !== d) {
+      return null;
+    }
+    return date;
+  }
 
-  if (isNaN(day) || isNaN(month) || isNaN(year)) return null;
-  if (day < 1 || day > 31 || month < 1 || month > 12) return null;
-  if (year < 1900 || year > 2100) return null;
-
-  // Create date at UTC midnight
-  const date = new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
-
-  // Validate date is real (e.g., not Feb 30)
-  if (date.getUTCDate() !== day) return null;
-
-  return date;
+  return null;
 }
 
+/** Alias used by csvParser.js */
+export const parseDate = parseDDMMYYYY;
+
+// ─── formatDate ───────────────────────────────────────────────────────────────
 /**
- * Format Date object to dd/mm/yyyy string
+ * Format a Date (or date string) to "dd/mm/yyyy".
+ * Used for grid display, CSV export, and API responses.
  */
 export function formatDate(date) {
   if (!date) return '';
-
   const d = new Date(date);
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const year = d.getUTCFullYear();
-
-  return `${day}/${month}/${year}`;
+  if (isNaN(d.getTime())) return '';
+  return [
+    String(d.getDate()).padStart(2, '0'),
+    String(d.getMonth() + 1).padStart(2, '0'),
+    d.getFullYear()
+  ].join('/');
 }
 
+// ─── formatDateTimeForDisplay ─────────────────────────────────────────────────
 /**
- * Format Date object to dd/mm/yyyy HH:mm string for display
+ * Format a Date to "dd/mm/yyyy HH:mm".
+ * Used for "Last Modified" and "Created At" columns.
  */
 export function formatDateTimeForDisplay(date) {
   if (!date) return '';
-
   const d = new Date(date);
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
-  const hours = String(d.getHours()).padStart(2, '0');
-  const minutes = String(d.getMinutes()).padStart(2, '0');
+  if (isNaN(d.getTime())) return '';
+  return [
+    String(d.getDate()).padStart(2, '0'),
+    String(d.getMonth() + 1).padStart(2, '0'),
+    d.getFullYear()
+  ].join('/') + ' ' + [
+    String(d.getHours()).padStart(2, '0'),
+    String(d.getMinutes()).padStart(2, '0')
+  ].join(':');
+}
 
-  return `${day}/${month}/${year} ${hours}:${minutes}`;
+// ─── startOfDay / endOfDay ────────────────────────────────────────────────────
+/**
+ * Return a copy of the date with time set to 00:00:00.000.
+ * Use this before storing dates in MongoDB to keep the compound index
+ * { empId, date } consistent.
+ */
+export function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
 }
 
 /**
- * Convert Date to ISO string for API transmission
+ * Return a copy of the date with time set to 23:59:59.999.
+ * Use this as the upper bound in date-range queries.
  */
-export function formatDateISO(date) {
-  if (!date) return null;
-  return date.toISOString();
+export function endOfDay(date) {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
 }
 
+// ─── buildDateRange ───────────────────────────────────────────────────────────
 /**
- * Format timestamp for last modified display (dd/mm/yyyy HH:mm)
+ * Parse a start/end pair (any supported format) and return a MongoDB-ready
+ * range object: { $gte: startOfDay, $lte: endOfDay }.
+ *
+ * Returns null if either date is invalid.
+ *
+ * Usage in routes:
+ *   const range = buildDateRange(req.query.startDate, req.query.endDate);
+ *   if (!range) return res.status(400).json({ message: 'Invalid date range' });
+ *   AttendanceLog.find({ date: range });
  */
-export function formatLastModified(dateString) {
-  if (!dateString) return '';
-  
-  try {
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) return '';
-    return formatDateTimeForDisplay(date);
-  } catch {
-    return '';
-  }
+export function buildDateRange(startStr, endStr) {
+  const start = parseDDMMYYYY(startStr);
+  const end   = parseDDMMYYYY(endStr);
+  if (!start || !end) return null;
+  if (end < start)    return null;
+  return { $gte: startOfDay(start), $lte: endOfDay(end) };
 }
 
-/**
- * Get today's date in dd/mm/yyyy format
- */
+// ─── convenience helpers ──────────────────────────────────────────────────────
+
+/** Today's date as "dd/mm/yyyy" */
 export function getTodayDate() {
   return formatDate(new Date());
 }
 
 /**
- * Get date minus days in dd/mm/yyyy format
+ * Date N days before today as "dd/mm/yyyy".
+ * Useful for default "From" values in date-range pickers.
  */
 export function getDateMinusDays(days) {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return formatDate(date);
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return formatDate(d);
 }
 
+/** Alias kept for backward compatibility */
+export function formatLastModified(dateString) {
+  return dateString ? formatDateTimeForDisplay(dateString) : '--';
+}
+
+// ─── default export ───────────────────────────────────────────────────────────
 export default {
+  parseDDMMYYYY,
   parseDate,
   formatDate,
   formatDateTimeForDisplay,
-  formatDateISO,
-  formatLastModified,
+  startOfDay,
+  endOfDay,
+  buildDateRange,
   getTodayDate,
-  getDateMinusDays
+  getDateMinusDays,
+  formatLastModified
 };

@@ -1,158 +1,243 @@
-import mongoose from 'mongoose';
+// models/AttendanceLog.js
 
-const attendanceLogSchema = new mongoose.Schema({
-  date: {
-    type: Date,
-    required: true,
-    index: true
-  },
-  empId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Employee',
-    required: true,
-    index: true
-  },
-  empNumber: {
-    type: String,
-    required: true,
-    index: true
-  },
-  empName: {
-    type: String,
-    required: true
-  },
-  department: {
-    type: String,
-    required: true
-  },
-  status: {
-    type: String,
-    enum: ['Present', 'Late', 'Leave', 'Absent'],
-    default: 'Absent',
-    index: true
-  },
-  inOut: {
-    in: {
+import mongoose from "mongoose";
+
+const deductionDetailSchema = new mongoose.Schema(
+  {
+    amount: { type: Number, required: true, min: 0 },
+    reason: { type: String, required: true, trim: true },
+    type: {
       type: String,
-      validate: {
-        validator: function(v) {
-          if (!v) return true;
-          return /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/.test(v);
-        },
-        message: 'Invalid time format'
-      }
+      enum: ["late_login", "early_logout", "fixed_penalty", "hourly_penalty"],
+      required: true,
     },
-    out: {
-      type: String,
-      validate: {
-        validator: function(v) {
-          if (!v) return true;
-          return /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/.test(v);
-        },
-        message: 'Invalid time format'
-      }
-    }
+    createdAt: { type: Date, default: Date.now },
   },
-  shift: {
-    start: {
-      type: String,
-      required: true
-    },
-    end: {
-      type: String,
-      required: true
-    }
+  { _id: false },
+);
+
+const otDetailSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: ['manual'], default: 'manual' },
+    amount: { type: Number, min: 0, default: 0 },
+    hours: { type: Number, min: 0, default: 0 },
+    rate: { type: Number, enum: [1, 1.5, 2], default: 1 },
+    reason: { type: String, required: true, trim: true },
+    createdAt: { type: Date, default: Date.now },
   },
-  hourlyRate: {
-    type: Number,
-    required: true,
-    min: 0
-  },
-  financials: {
-    hoursPerDay: {
-      type: Number,
-      default: 0,
-      min: 0
-    },
-    basePay: {
-      type: Number,
-      default: 0,
-      min: 0
-    },
-    deduction: {
-      type: Number,
-      default: 0,
-      min: 0
-    },
-    otMultiplier: {
-      type: Number,
-      default: 1,
-      enum: [1, 1.5, 2]
-    },
-    otHours: {
-      type: Number,
-      default: 0,
-      min: 0
-    },
-    otAmount: {
-      type: Number,
-      default: 0,
-      min: 0
-    },
-    finalDayEarning: {
-      type: Number,
-      default: 0,
-      min: 0
-    }
-  },
-  manualOverride: {
-    type: Boolean,
-    default: false
-  },
-  metadata: {
-    source: {
-      type: String,
-      enum: ['system', 'manual', 'csv', 'correction_approval', 'leave_approval'],
-      default: 'system'
-    },
-    notes: String,
-    lastUpdatedBy: mongoose.Schema.Types.ObjectId,
-    csvImportBatch: String,
-    lastModifiedAt: {
+  { _id: false },
+);
+
+const attendanceLogSchema = new mongoose.Schema(
+  {
+    /**
+     * For normal shifts: this is the calendar date of check-in.
+     * For night shifts: this is the calendar date when the shift STARTS
+     * (even if the employee checks out the next calendar day).
+     */
+    date: {
       type: Date,
-      default: Date.now
-    }
-  },
-  isDeleted: {
-    type: Boolean,
-    default: false,
-    index: true
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-    index: true
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now,
-    index: true
-  }
-}, { 
-  timestamps: true
-});
+      required: true,
+      index: true,
+    },
 
-// Compound index to ensure one record per employee per date
+    empId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Employee",
+      required: true,
+      index: true,
+    },
+    empNumber: {
+      type: String,
+      required: true,
+      index: true,
+    },
+    empName: {
+      type: String,
+      required: true,
+    },
+    department: {
+      type: String,
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: ["Present", "Late", "Leave", "Absent"],
+      default: "Absent",
+      index: true,
+    },
+
+    inOut: {
+      in: {
+        type: String,
+        validate: {
+          validator: function (v) {
+            if (!v) return true;
+            return /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/.test(v);
+          },
+          message: "Invalid time format (HH:mm expected)",
+        },
+      },
+      out: {
+        type: String,
+        validate: {
+          validator: function (v) {
+            if (!v) return true;
+            return /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/.test(v);
+          },
+          message: "Invalid time format (HH:mm expected)",
+        },
+      },
+      /**
+       * outNextDay: true means the "out" time belongs to the NEXT calendar day.
+       * Used for night-shift employees whose check-out crosses midnight.
+       * CSV import sets this automatically via the 14-hour window rule.
+       */
+      outNextDay: {
+        type: Boolean,
+        default: false,
+      },
+    },
+
+    shift: {
+      start: { type: String, required: true }, // e.g. "22:00"
+      end: { type: String, required: true }, // e.g. "06:00" — can be next-day
+      /**
+       * isNightShift: true when shift.end < shift.start (crosses midnight).
+       * Computed and stored on save so queries can filter efficiently.
+       */
+      isNightShift: { type: Boolean, default: false },
+    },
+salaryType: {
+  type: String,
+  enum: ['hourly', 'monthly'],
+  required: true
+},
+hourlyRate: {   // already exists — effective rate at time of log
+  type: Number,
+  required: true,
+  min: 0
+},
+
+    financials: {
+      hoursWorked: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      // Scheduled shift duration in hours (e.g. 8h for a 22:00–06:00 shift)
+      scheduledHours: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      lateMinutes:        { type: Number, default: 0, min: 0 },  // minutes after shift.start
+earlyLogoutMinutes: { type: Number, default: 0, min: 0 },  // minutes before shift.end
+      basePay: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      deduction: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      deductionDetails: {
+        type: [deductionDetailSchema],
+        default: [],
+      },
+      otMultiplier: {
+        type: Number,
+        default: 1,
+        enum: [1, 1.5, 2],
+      },
+      otHours: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      otAmount: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      otDetails: {
+        type: [otDetailSchema],
+        default: [],
+      },
+      /**
+       * finalDayEarning = basePay - deduction + otAmount
+       * Always recomputed on save; do NOT set this manually.
+       */
+      finalDayEarning: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+    },
+
+    manualOverride: {
+      type: Boolean,
+      default: false,
+    },
+
+    metadata: {
+      source: {
+        type: String,
+        enum: [
+          "system",
+          "manual",
+          "csv",
+          "correction_approval",
+          "leave_approval",
+        ],
+        default: "system",
+      },
+      notes: String,
+      lastUpdatedBy: mongoose.Schema.Types.ObjectId,
+      csvImportBatch: String,
+      lastModifiedAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+
+    isDeleted: { type: Boolean, default: false, index: true },
+  },
+  {
+    timestamps: true, // adds createdAt + updatedAt automatically
+  },
+);
+
+// ─── Compound index: one record per employee per shift-start date ─────────────
 attendanceLogSchema.index({ empId: 1, date: 1 }, { unique: true });
 
-// Pre-save hook to update lastModifiedAt
-attendanceLogSchema.pre('save', function(next) {
+// ─── Pre-save: auto-detect night shift & recompute finalDayEarning ────────────
+attendanceLogSchema.pre("save", function (next) {
+  // 1. Detect night shift (shift end is earlier than shift start)
+  if (this.shift?.start && this.shift?.end) {
+    const [sh, sm] = this.shift.start.split(":").map(Number);
+    const [eh, em] = this.shift.end.split(":").map(Number);
+    this.shift.isNightShift = eh * 60 + em < sh * 60 + sm;
+  }
+
+  // 2. Recompute finalDayEarning so it's always consistent
+  const f = this.financials;
+  if (f) {
+    f.finalDayEarning = Math.max(
+      0,
+      (f.basePay || 0) - (f.deduction || 0) + (f.otAmount || 0),
+    );
+  }
+
+  // 3. Touch lastModifiedAt
   if (this.isModified() && this.metadata) {
     this.metadata.lastModifiedAt = new Date();
   }
+
   next();
 });
 
-const AttendanceLog = mongoose.model('AttendanceLog', attendanceLogSchema);
-
+const AttendanceLog = mongoose.model("AttendanceLog", attendanceLogSchema);
 export default AttendanceLog;
